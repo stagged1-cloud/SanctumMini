@@ -1,0 +1,18 @@
+## Interface: 16001
+## Title: Sanctum Mini
+## Notes: Healer party frames with click-casting, a GSE-style sequence button and a per-level goals checklist. Built for WoW: Forever (levels 5-60).
+## Author: Don Thompson
+## Version: 0.4.2
+## SavedVariables: SanctumDB
+## SavedVariablesPerCharacter: SanctumCharDB
+
+Core.lua
+Data.lua
+TalentData.lua
+Logic.lua
+Frames.lua
+Sequence.lua
+Goals.lua
+Minimap.lua
+Talents.lua
+Options.lua

@@ -1,0 +1,13 @@
+package-as: SanctumMini
+
+ignore:
+  - tests
+  - .github
+  - "*.md"
+  - .gitattributes
+  - .gitignore
+  - .editorconfig
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
