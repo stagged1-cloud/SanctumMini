@@ -496,6 +496,142 @@ T("EvaluateGoals overall", function()
 end)
 
 ---------------------------------------------------------------------------
+print("== Logic: talents for every healing class")
+local HEALERS = { "PRIEST", "DRUID", "PALADIN", "SHAMAN" }
+for _, cls in ipairs(HEALERS) do
+    local cd = ns.TalentData[cls]
+    -- C1: the class has talent data at all (the planner showed "Priest only" before 0.5.0)
+    T(cls .. ": has talent data", function()
+        assert(cd, "no TalentData for " .. cls)
+        assert(cd.builds and #cd.builds > 0, "no builds")
+        eq(#cd.trees, 3)
+    end)
+    if cd then
+        -- C2: every talent sits in a real tree and row, has a sane max, and its prerequisite exists in the same tree
+        T(cls .. ": talent table well formed", function()
+            local n = 0
+            for abbr, t in pairs(cd.talents) do
+                n = n + 1
+                assert(t.tree >= 1 and t.tree <= 3, abbr .. " tree")
+                assert(t.row >= 1 and t.row <= 7, abbr .. " row")
+                assert(t.max >= 1 and t.max <= 5, abbr .. " max")
+                if t.pre then
+                    local p = cd.talents[t.pre]
+                    assert(p, abbr .. " prerequisite " .. t.pre .. " missing")
+                    eq(p.tree, t.tree, abbr .. " prerequisite in another tree")
+                    assert(p.row <= t.row, abbr .. " prerequisite below it")
+                end
+            end
+            assert(n >= 40, "only " .. n .. " talents")
+        end)
+        -- C3: talent names are unique, so reading spent ranks by name can't mix two talents up
+        T(cls .. ": talent names unique", function()
+            local seen = {}
+            for abbr, t in pairs(cd.talents) do
+                assert(not seen[t.name], t.name .. " used by " .. abbr .. " and " .. tostring(seen[t.name]))
+                seen[t.name] = abbr
+            end
+        end)
+        -- C4: every build is legal (row gates, maxed prerequisites, max ranks, <= 51 points)
+        for _, b in ipairs(cd.builds) do
+            T(cls .. " build legal: " .. b.key, function()
+                local pts = L.ExpandBuild(b.order)
+                local errs = L.ValidateBuild(pts, cd.talents, 10)
+                eq(#errs, 0, table.concat(errs, "; "))
+                assert(#pts <= 51)
+            end)
+            -- C5: the split shown in the planner title matches the real points per tree
+            T(cls .. " build split: " .. b.key, function()
+                local c = { 0, 0, 0 }
+                for _, a in ipairs(L.ExpandBuild(b.order)) do c[cd.talents[a].tree] = c[cd.talents[a].tree] + 1 end
+                eq(table.concat(c, "/"), b.split)
+            end)
+            -- C6: published text rules - sourced, no em or en dashes
+            T(cls .. " build text: " .. b.key, function()
+                assert(b.source and #b.source > 0, "no source")
+                for _, f in ipairs({ b.label, b.source }) do
+                    assert(not f:find("\226\128\147") and not f:find("\226\128\148"), "dash in: " .. f)
+                end
+            end)
+        end
+        -- C7: build keys unique and the default build exists
+        T(cls .. ": build keys unique, default exists", function()
+            local seen, hasDefault = {}, false
+            for _, b in ipairs(cd.builds) do
+                assert(not seen[b.key], "duplicate key " .. b.key); seen[b.key] = true
+                if b.key == cd.defaultBuild then hasDefault = true end
+            end
+            eq(hasDefault, true, "defaultBuild " .. tostring(cd.defaultBuild))
+        end)
+        -- C8: every active talent is a real talent
+        T(cls .. ": activeTalents exist", function()
+            for _, a in ipairs(cd.activeTalents) do assert(cd.talents[a], a) end
+        end)
+        -- C9: every build maps to a template, and the template builds within the macro limit
+        T(cls .. ": every build has a working sequence", function()
+            local active = {}
+            for _, a in ipairs(cd.activeTalents) do active[cd.talents[a].name] = a end
+            for _, b in ipairs(cd.builds) do
+                local tpl = cd.sequences[cd.buildSequence[b.key]]
+                assert(tpl, b.key .. " has no sequence template")
+                local seq = L.SequenceFromTemplate(tpl, L.ExpandBuild(b.order), active)
+                assert(#seq.steps > 0, b.key .. " sequence is empty")
+                local _, e = L.BuildSequenceMacros(seq)
+                eq(#e, 0, b.key .. ": " .. table.concat(e, "; "))
+            end
+        end)
+        -- C10: trainer table has level-1 spells and nothing past 60
+        T(cls .. ": trainer levels sane", function()
+            local ones = 0
+            for spell, lvl in pairs(cd.trainer) do
+                assert(lvl >= 1 and lvl <= 60, spell .. " level " .. lvl)
+                if lvl == 1 then ones = ones + 1 end
+            end
+            assert(ones >= 2, "no level 1 spells")
+        end)
+    end
+    -- C11: first-login default sequence exists for the class and fits the macro limit
+    T(cls .. ": default sequence builds", function()
+        local seq = D.defaultSequences[cls]
+        assert(seq, "no default sequence")
+        local m, e = L.BuildSequenceMacros(seq)
+        eq(#e, 0, table.concat(e, "; ")); eq(#m, #seq.steps)
+    end)
+    -- C12: frames track at least one aura for every healer
+    T(cls .. ": tracked auras present", function()
+        assert(#(D.trackedAuras[cls] or {}) > 0, "no tracked auras")
+    end)
+end
+-- C13: non-Priest classes carry their own tree letters for the planner
+T("Tree tags for non-Priest healers", function()
+    for _, cls in ipairs({ "DRUID", "PALADIN", "SHAMAN" }) do eq(#ns.TalentData[cls].treeTags, 3, cls) end
+end)
+-- C14: a level 25 Druid on the default build has Swiftmend planned, Wild Growth still future
+T("Druid plan at 25", function()
+    local cd = ns.TalentData.DRUID
+    local plan = L.TalentPlan(L.ExpandBuild(cd.builds[1].order), 25, nil, 10)
+    eq(plan.pointsNow, 16)
+    local st = {}
+    for _, r in ipairs(plan.rows) do st[r.abbr] = r.status end
+    eq(st.Swiftm, "future", "Swiftmend is point 19, not yet planned")
+    eq(st.IRejuv, "done"); eq(st.WGrowth, "future")
+end)
+-- C15: Shaman Riptide is only reachable after Healing Way is maxed
+T("Shaman Riptide needs Healing Way 3/3", function()
+    local cd = ns.TalentData.SHAMAN
+    local bad = "IHW*5 TidF*5 HFocus*3 WS NGrace TotF*2 MTT RT*2 HWay*2 NS RT Purif*5 Rip"
+    eq(#L.ValidateBuild(L.ExpandBuild(bad), cd.talents) > 0, true)
+end)
+-- C16: Paladin seals in templates are once-per-target steps, never spammed every press
+T("Paladin seals are dot steps", function()
+    for _, tpl in pairs(ns.TalentData.PALADIN.sequences) do
+        for _, s in ipairs(tpl.steps) do
+            if s[1]:find("^Seal of") then eq(s[2], "dot", s[1]) end
+        end
+        for _, l in ipairs(tpl.keyPress) do assert(not l:find("Seal of"), "seal in keyPress") end
+    end
+end)
+
 print("== Smoke: load all files against a mocked WoW API")
 ---------------------------------------------------------------------------
 local function mockEnv()
@@ -743,6 +879,28 @@ T("Talent planner opens, reads talents, cycles builds", function()
     eq(plan.pointsNow, 11, "level 20 mock")
     eq(plan.rows[1].actual, 3, "Improved Renew read from GetTalentInfo")
     local first = sns.Talents.CurrentBuild().key
+    sns.Talents.Refresh()
+end)
+-- S1: the planner renders for every healing class with its own tree letters,
+-- and a non-healer gets the healing-classes message, not "Priest only"
+T("Talent planner renders for every healer, explains non-healers", function()
+    local f = sns.Talents.frame
+    local oldClass, oldBuild = sns.class, sns.cdb.talentBuild
+    sns.cdb.talentBuild = nil
+    for cls, tag in pairs({ DRUID = "R|r", PALADIN = "H|r", SHAMAN = "R|r" }) do
+        sns.class = cls
+        sns.Talents.Refresh()
+        local b = sns.Talents.CurrentBuild()
+        eq(b.key, ns.TalentData[cls].defaultBuild, cls)
+        local row = f.rows[1]:GetText()
+        assert(row and row:find(tag, 1, true), cls .. " row: " .. tostring(row))
+    end
+    sns.class = "WARRIOR"
+    sns.Talents.Refresh()
+    local src = f.source:GetText()
+    assert(src:find("healing classes"), src)
+    assert(not src:find("Priest only"), src)
+    sns.class, sns.cdb.talentBuild = oldClass, oldBuild
     sns.Talents.Refresh()
 end)
 T("Level-up prints next talent", function()

@@ -2,7 +2,7 @@
 -- Namespace, saved variables, API compat shims, event bus, combat queue, slash commands.
 
 local ADDON, ns = ...
-ns.version = "0.4.3"
+ns.version = "0.5.0"
 ns.Data = ns.Data or {}
 ns.Logic = ns.Logic or {}
 

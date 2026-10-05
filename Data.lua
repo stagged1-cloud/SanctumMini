@@ -103,9 +103,16 @@ D.trackedAuras = {
     DRUID = {
         { name = "Rejuvenation", filter = "HELPFUL", mine = true, colour = { 0.8, 0.3, 1.0 } },
         { name = "Regrowth",     filter = "HELPFUL", mine = true, colour = { 0.2, 1.0, 0.2 } },
+        { name = "Wild Growth",  filter = "HELPFUL", mine = true, colour = { 0.6, 1.0, 0.6 } },
     },
-    PALADIN = {},
-    SHAMAN = {},
+    PALADIN = {
+        { name = "Light's Vigil", filter = "HELPFUL", mine = true,  colour = { 1.0, 0.9, 0.3 } },
+        { name = "Forbearance",   filter = "HARMFUL", mine = false, colour = { 0.8, 0.2, 0.2 } },
+    },
+    SHAMAN = {
+        { name = "Riptide",             filter = "HELPFUL", mine = true,  colour = { 0.2, 0.6, 1.0 } },
+        { name = "Ancestral Fortitude", filter = "HELPFUL", mine = false, colour = { 0.6, 0.9, 0.3 } },
+    },
 }
 
 -- Group buff you are responsible for: a small dot shows on frames missing it (out of combat).
@@ -248,6 +255,39 @@ D.defaultSequences = {
             "/cast [harm,nodead] Mind Flay",
             "/castsequence [harm,nodead] reset=target Shadow Word: Pain, null",
             "/cast [harm,nodead] !Shoot",
+        },
+        postMacro = {},
+    },
+    DRUID = {
+        name = "Druid levelling DPS",
+        -- Caster form. Feral builds get a Cat Form sequence from the talent planner.
+        keyPress = { "/targetenemy [noharm][dead]" },
+        steps = {
+            "/castsequence [harm,nodead] reset=target Moonfire, null",
+            "/castsequence [harm,nodead] reset=target Insect Swarm, null",
+            "/cast [harm,nodead] Wrath",
+        },
+        postMacro = {},
+    },
+    PALADIN = {
+        name = "Paladin levelling DPS",
+        -- Seals last 30 sec in Forever and Judgement no longer consumes them,
+        -- so the seal goes up once per target.
+        keyPress = { "/targetenemy [noharm][dead]", "/startattack" },
+        steps = {
+            "/castsequence [harm,nodead] reset=target Seal of Righteousness, null",
+            "/cast [harm,nodead] Judgement",
+            "/cast [harm,nodead] Holy Strike",
+        },
+        postMacro = {},
+    },
+    SHAMAN = {
+        name = "Shaman levelling DPS",
+        keyPress = { "/targetenemy [noharm][dead]" },
+        steps = {
+            "/castsequence [harm,nodead] reset=target Flame Shock, null",
+            "/cast [harm,nodead] Stormstrike",
+            "/cast [harm,nodead] Lightning Bolt",
         },
         postMacro = {},
     },

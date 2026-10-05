@@ -180,7 +180,7 @@ function T.Refresh()
     for _, r in ipairs(f.rows) do r:Hide() end
     if not plan then
         f.title:SetText("Talent planner")
-        f.source:SetText("No builds for your class yet - Priest only for now.")
+        f.source:SetText("The talent planner covers the healing classes: Priest, Druid, Paladin and Shaman.")
         f.summary:SetText(""); f.footer:SetText("")
         return
     end
@@ -204,7 +204,7 @@ function T.Refresh()
         local t = cd.talents[r.abbr]
         local you = r.actual and ("  you %d"):format(r.actual) or ""
         local line = f.rows[i]
-        line:SetText(("%s  Lv%-2d  %s%s %d/%d|r%s"):format(TREE_TAG[t.tree], r.firstLevel,
+        line:SetText(("%s  Lv%-2d  %s%s %d/%d|r%s"):format((cd.treeTags or TREE_TAG)[t.tree], r.firstLevel,
             COLOURS[r.status], t.name, r.planned, r.total, you))
         line:Show()
     end

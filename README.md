@@ -1,6 +1,6 @@
 # Sanctum Mini
 
-Healer party frames with click-casting, a GSE-style sequence button, a talent planner and a per-level goals checklist. Built for **WoW: Forever** (Interface 16001, levels 5-60). Priest first; Druid, Paladin and Shaman get starter click kits.
+Healer party frames with click-casting, a GSE-style sequence button, a talent planner and a per-level goals checklist. Built for **WoW: Forever** (Interface 16001, levels 5-60). Supports all four healing classes: Priest, Druid, Paladin and Shaman.
 
 > Beta. WoW: Forever is in beta and so is this. Spell, item and talent data are researched against build 1.60.1 and may shift between patches.
 
@@ -9,7 +9,7 @@ Healer party frames with click-casting, a GSE-style sequence button, a talent pl
 - **Own party frames** - player + party1-4 as secure unit buttons. Health, mana, dispellable debuffs and tracked buffs. Click-cast any mouse button / modifier combination. Nothing protected is touched in combat.
 - **Sequence button** - GSE-style stepping macro (KeyPress / steps / PostMacro). Steps advance in a secure snippet, so it works in combat. Priority mode for a single smart macro. Bind a key with `/sanc bind F` or use `/click SanctumSeqButton`.
 - **Cast log** - every press, cast, fail and error, persisted between sessions (`/sanc log`).
-- **Talent planner** - recommended Forever Priest builds, what you should have at your level, what you actually have, and the next point printed on every level-up.
+- **Talent planner** - recommended Forever builds for Priest, Druid, Paladin and Shaman, what you should have at your level, what you actually have, and the next point printed on every level-up.
 - **Goals checklist** - per-level gear, enchants, consumables, buff food and reagents; anything missing or wrong shows in red.
 - **Minimap button** - left-click options, right-click lock/unlock, shift-click goals, drag to move.
 - **Forever-safe** - prefers `C_*` APIs, falls back to legacy globals, and degrades quietly on secret or blocked values. `/sanc probe` reports what the client exposes.
