@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.1] - 2026-10-06 (Beta, WoW: Forever 1.60.1)
+
+- Goals panel widens to fit its text (up to 420 px) and wraps anything longer, so lines no longer run off the edge
+- Closing the goals panel with its X now clears the Options tick straight away; the tick and the panel can no longer get out of step
+- Enchant suggestions: a missing enchant now names the best healer enchant for your level (Forever names, e.g. Lesser Intellect chest, Lesser Healing Power bracers, Revelation weapon)
+- Enchant checks start at level 15 (was 40). Existing settings above 15 are lowered once on upgrade; change it back in Options if you prefer
+- Slots with nothing worth enchanting yet are skipped: gloves until 60, one-handed weapons until 22. Staves get their own list
+- Options explains the enchant setting under the level box
+- Test suite: 221 tests
+
 ## [0.5.0] - 2026-10-05 (Beta, WoW: Forever 1.60.1)
 
 All four healing classes are now fully supported.

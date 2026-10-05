@@ -390,7 +390,8 @@ local function fullGear(req, enchanted)
 end
 -- T21: fully geared lvl 20 priest, no problems in gear
 T("Gear all OK", function()
-    local sec = L.EvaluateGear({ level = 20, slots = fullGear(18, false) }, G, "PRIEST")
+    -- enchanted: enchants are checked from 15 since 0.5.1
+    local sec = L.EvaluateGear({ level = 20, slots = fullGear(18, true) }, G, "PRIEST")
     eq(sec.status, L.OK); eq(#sec.items, 0); eq(sec.checked, #G.gearSlots)
 end)
 -- T22: empty chest at level 10 is red; empty neck at 10 is fine
@@ -420,7 +421,67 @@ T("Enchant gating", function()
     local a = L.EvaluateGear({ level = 39, slots = fullGear(36, false), enchantFromLevel = 40 }, G, "PRIEST")
     eq(#a.items, 0)
     local b = L.EvaluateGear({ level = 40, slots = fullGear(36, false), enchantFromLevel = 40 }, G, "PRIEST")
-    eq(b.status, L.BAD); eq(#b.items, 6, "6 enchantable slots")
+    eq(b.status, L.BAD); eq(#b.items, 5, "6 enchantable slots, Hands skipped until 60")
+end)
+-- E1: the best reachable enchant is named, nil when nothing is reachable yet
+T("EnchantFor picks the best tier for the level", function()
+    local list = G.enchants["Chest"]
+    eq(L.EnchantFor(list, 7), nil)
+    eq(L.EnchantFor(list, 8), "Minor Intellect")
+    eq(L.EnchantFor(list, 21), "Lesser Intellect")
+    eq(L.EnchantFor(list, 22), "Intellect")
+    eq(L.EnchantFor(list, 60), "Major Intellect")
+    eq(L.EnchantFor(nil, 60), nil)
+    eq(L.EnchantFor({}, 60), nil)
+end)
+-- E2: at 15 the message names the enchant to get, per slot
+T("Enchant suggestions at 15", function()
+    local sec = L.EvaluateGear({ level = 15, slots = fullGear(12, false), enchantFromLevel = 15 }, G, "PRIEST")
+    local t = {}
+    for _, it in ipairs(sec.items) do t[it.text:match("^([%w ]+):")] = it.text end
+    eq(t.Chest, "Chest: no enchant - get Lesser Intellect")
+    eq(t.Back, "Back: no enchant - get Lesser Protection")
+    eq(t.Wrist, "Wrist: no enchant - get Minor Spirit")
+    eq(t.Feet, "Feet: no enchant - get Minor Stamina")
+    eq(t.Hands, nil, "no healer glove enchant before 60")
+    eq(t["Main Hand"], nil, "one-hander: nothing worth it before 22")
+end)
+-- E3: a two-handed weapon (staff) gets its own list and is flagged from 15
+T("Two-hand weapon enchant", function()
+    local s = fullGear(12, false); s[16].twoHand = true
+    local sec = L.EvaluateGear({ level = 15, slots = s, enchantFromLevel = 15 }, G, "PRIEST")
+    local found
+    for _, it in ipairs(sec.items) do if it.text:find("^Main Hand") then found = it.text end end
+    eq(found, "Main Hand: no enchant - get Lesser Intellect")
+end)
+-- E4: below the configured level nothing is flagged, even with suggestions available
+T("Enchant level setting still gates suggestions", function()
+    local sec = L.EvaluateGear({ level = 30, slots = fullGear(28, false), enchantFromLevel = 31 }, G, "PRIEST")
+    eq(#sec.items, 0)
+end)
+-- E5: enchanted slots stay quiet; Hands flagged at 60 with the raid source named
+T("Enchanted slots OK, Hands at 60", function()
+    eq(#L.EvaluateGear({ level = 60, slots = fullGear(58, true), enchantFromLevel = 15 }, G, "PRIEST").items, 0)
+    local sec = L.EvaluateGear({ level = 60, slots = fullGear(58, false), enchantFromLevel = 15 }, G, "PRIEST")
+    local hands
+    for _, it in ipairs(sec.items) do if it.text:find("^Hands") then hands = it.text end end
+    eq(hands, "Hands: no enchant - get Healing Power (Ahn'Qiraj)")
+end)
+-- E6: suggestion data well formed - ascending levels, names present, every enchantable slot covered
+T("Enchant table well formed", function()
+    eq(G.enchantFromLevel, 15)
+    for _, slot in ipairs(G.gearSlots) do
+        if slot.enchant then assert(G.enchants[slot.name], "no suggestions for " .. slot.name) end
+    end
+    for key, list in pairs(G.enchants) do
+        local last = 0
+        for _, t in ipairs(list) do
+            assert(t.lvl >= last and t.lvl <= 60, key .. " levels out of order")
+            assert(type(t.name) == "string" and #t.name > 0, key .. " name")
+            assert(not t.name:find("\226\128\147") and not t.name:find("\226\128\148"), "dash in " .. t.name)
+            last = t.lvl
+        end
+    end
 end)
 -- T26: durability thresholds
 T("Durability", function()
@@ -432,7 +493,7 @@ T("Durability", function()
 end)
 -- T27: wand slot ignored for paladin
 T("Wand slot only for wand classes", function()
-    local s = fullGear(20, false); s[18] = { empty = true }
+    local s = fullGear(20, true); s[18] = { empty = true }
     eq(#L.EvaluateGear({ level = 20, slots = s }, G, "PALADIN").items, 0)
     eq(#L.EvaluateGear({ level = 20, slots = s }, G, "PRIEST").items, 1)
 end)
@@ -649,13 +710,23 @@ local function mockEnv()
                 Show = function(self) self._shown = true; if self._scripts.OnShow then self._scripts.OnShow(self) end end,
                 Hide = function(self) self._shown = false end,
                 SetShown = function(self, v) if v then self:Show() else self:Hide() end end,
-                GetWidth = function() return 120 end, GetHeight = function() return 30 end,
+                GetWidth = function(self) return self._w or 120 end, GetHeight = function(self) return self._h or 30 end,
+                SetWidth = function(self, w) self._w = w end,
+                SetHeight = function(self, h) self._h = h end,
+                -- 6 px per character; wraps when a width is set (0 = unwrapped)
+                GetStringWidth = function(self) return #(self._text or "") * 6 end,
+                GetStringHeight = function(self)
+                    local tw = #(self._text or "") * 6
+                    if self._w and self._w > 0 and tw > self._w then return 13 * math.ceil(tw / self._w) end
+                    return 13
+                end,
                 GetFrameLevel = function() return 1 end,
                 GetPoint = function() return "CENTER", nil, "CENTER", 0, 0 end,
                 GetText = function(self) return self._text or "" end,
                 SetText = function(self, v) self._text = v end,
                 HasFocus = function() return false end,
-                GetChecked = function() return false end,
+                GetChecked = function(self) return self._checked or false end,
+                SetChecked = function(self, v) self._checked = v and true or false end,
                 SetScript = function(self, s, f) self._scripts[s] = f end,
                 GetScript = function(self, s) return self._scripts[s] end,
                 GetEffectiveScale = function() return 1 end,
@@ -763,8 +834,11 @@ end)
 local function fire(event, ...)
     for _, fn in ipairs(sns.handlers[event] or {}) do fn(event, ...) end
 end
+env.SanctumDB = { goals = { enchantFromLevel = 20 } }   -- a 0.5.0 user who had set 20
 T("ADDON_LOADED creates saved vars with priest kit", function()
     fire("ADDON_LOADED", "Sanctum")
+    eq(env.SanctumDB.goals.enchantFromLevel, 15, "0.5.1 lowers enchant checks to 15 once")
+    eq(env.SanctumDB.goals.enchant15, true)
     eq(env.SanctumCharDB.bindings["2"], "Renew")
     eq(env.SanctumCharDB.sequence.name, "Priest levelling DPS")
 end)
@@ -789,6 +863,44 @@ end)
 T("Unit events and test mode run", function()
     fire("UNIT_HEALTH", "player"); fire("UNIT_AURA", "player"); fire("GROUP_ROSTER_UPDATE")
     env.SlashCmdList.SANCTUM("test"); env.SlashCmdList.SANCTUM("test")
+end)
+-- G1: the goals panel widens to fit long lines, caps at 420 and wraps beyond that
+T("Goals panel fits its text", function()
+    local G2 = sns.Goals
+    G2.Draw({ { title = "Consumables", status = 1, items = {
+        { text = "Healing Potion: 6, lower tier - upgrade to Healing Potion", status = 1 } } } }, 1)
+    local w = G2.frame:GetWidth()
+    assert(w > 260 and w <= 420, "width " .. w)
+    local fs = G2.frame.lines[2]
+    assert(10 + fs:GetStringWidth() + 10 <= w + 1, "line fits inside the panel")
+    G2.Draw({ { title = "Gear", status = 2, items = {
+        { text = string.rep("x", 120), status = 2 } } } }, 2)
+    eq(G2.frame:GetWidth(), 420, "capped")
+    assert(G2.frame:GetHeight() >= 8 + 24 + 13 * 2, "wrapped line adds height")
+    G2.Draw({ { title = "Gear", status = 0, items = {} } }, 0)
+    eq(G2.frame:GetWidth(), 260, "shrinks back")
+end)
+-- G2: the X, the slash command and the Options tick always agree
+T("Goals close button syncs Options checkbox", function()
+    env.SlashCmdList.SANCTUM("")   -- open options
+    local O = sns.Options
+    assert(O.frame and O.frame:IsShown(), "options open")
+    local goalsCb = O.frame.checks[5].cb   -- 5th Display option is "Goals panel"
+    sns.Goals.SetShown(true)
+    eq(goalsCb:GetChecked(), true)
+    -- the panel's X
+    sns.Goals.frame.closeButton:GetScript("OnClick")()
+    eq(env.SanctumDB.goals.shown, false); eq(sns.Goals.frame:IsShown(), false)
+    eq(goalsCb:GetChecked(), false, "tick cleared while Options is open")
+    -- slash toggle back on updates the tick too
+    env.SlashCmdList.SANCTUM("goals")
+    eq(sns.Goals.frame:IsShown(), true); eq(goalsCb:GetChecked(), true)
+    -- the checkbox setter is explicit, never inverts
+    sns.Goals.SetShown(true)
+    eq(sns.Goals.frame:IsShown(), true, "setting true twice stays shown")
+    sns.Goals.SetShown(false); sns.Goals.SetShown(false)
+    eq(sns.Goals.frame:IsShown(), false, "setting false twice stays hidden")
+    sns.Goals.SetShown(true)
 end)
 T("Slash: options, goals, bind, probe, help", function()
     env.SlashCmdList.SANCTUM("")

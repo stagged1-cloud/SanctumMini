@@ -442,7 +442,7 @@ local function build()
         { "Class colours", function() return fdb.classColours end, function(v) fdb.classColours = v; ns.Frames.UpdateAll() end },
         { "Mana bars", function() return fdb.showMana end, function(v) fdb.showMana = v; relayout() end },
         { "Me at top", function() return fdb.showSelfFirst end, function(v) fdb.showSelfFirst = v; relayout() end },
-        { "Goals panel", function() return gdb.shown end, function() ns.Goals.Toggle() end },
+        { "Goals panel", function() return gdb.shown end, function(v) ns.Goals.SetShown(v) end },
         { "Goals: problems only", function() return gdb.onlyProblems end, function(v) gdb.onlyProblems = v; ns.Goals.Refresh() end },
         { "Minimap icon", function() return ns.db.minimap.shown end, function() ns.Minimap.Toggle() end },
         { "Test mode (fake party)", function() return ns.Frames.test end, function() ns.Frames.ToggleTest() end },
@@ -461,6 +461,8 @@ local function build()
         local n = tonumber(self:GetText()); if n then gdb.enchantFromLevel = n; ns.Goals.Refresh() end
     end)
     f.enchLvl = enchLvl
+    local en = label(f, "|cff999999Missing enchants are flagged from this level with the best healer enchant for it. Slots with nothing worth enchanting yet (gloves before 60) are skipped.|r")
+    en:SetPoint("TOPLEFT", el, "BOTTOMLEFT", 0, -6); en:SetWidth(420); en:SetJustifyH("LEFT")
 
     -- Sequence editor
     local x = 480

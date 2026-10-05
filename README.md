@@ -10,7 +10,7 @@ Healer party frames with click-casting, a GSE-style sequence button, a talent pl
 - **Sequence button** - GSE-style stepping macro (KeyPress / steps / PostMacro). Steps advance in a secure snippet, so it works in combat. Priority mode for a single smart macro. Bind a key with `/sanc bind F` or use `/click SanctumSeqButton`.
 - **Cast log** - every press, cast, fail and error, persisted between sessions (`/sanc log`).
 - **Talent planner** - recommended Forever builds for Priest, Druid, Paladin and Shaman, what you should have at your level, what you actually have, and the next point printed on every level-up.
-- **Goals checklist** - per-level gear, enchants, consumables, buff food and reagents; anything missing or wrong shows in red.
+- **Goals checklist** - per-level gear, enchants, consumables, buff food and reagents; anything missing or wrong shows in red. From level 15 (configurable) a missing enchant names the best healer enchant for your level, e.g. "Wrist: no enchant - get Minor Spirit". Gloves are not checked before 60, as there is no healer glove enchant until then.
 - **Minimap button** - left-click options, right-click lock/unlock, shift-click goals, drag to move.
 - **Forever-safe** - prefers `C_*` APIs, falls back to legacy globals, and degrades quietly on secret or blocked values. `/sanc probe` reports what the client exposes.
 

@@ -14,6 +14,7 @@ local COLOURS = {
 }
 local MAX_LINES = 40
 local LINE_H = 13
+local MIN_W, MAX_W = 260, 420   -- panel grows to fit its widest line, then wraps
 
 local function enchantedFromLink(link)
     if not link then return false end
@@ -37,7 +38,7 @@ function G.Snapshot()
             local ilvl, req = C.GetItemLevels(link)
             local cur, max = GetInventoryItemDurability(slot.id)
             snap.slots[slot.id] = { link = link, itemLevel = ilvl, reqLevel = req, durCur = cur, durMax = max,
-                                    enchanted = enchantedFromLink(link) }
+                                    enchanted = enchantedFromLink(link), twoHand = C.IsTwoHand(link) }
         else
             snap.slots[slot.id] = { empty = true }
         end
@@ -69,16 +70,17 @@ function G.Draw(sections, overall)
     local f = G.frame
     local onlyProblems = ns.db.goals.onlyProblems
     local n = 0
+    local shown = {}
     local function line(text, status, indent)
         n = n + 1
         if n > MAX_LINES then return end
         local fs = f.lines[n]
-        fs:ClearAllPoints()
-        fs:SetPoint("TOPLEFT", f, "TOPLEFT", 8 + (indent and 10 or 0), -24 - (n - 1) * LINE_H)
+        fs:SetWidth(0)   -- unwrapped, so its natural width can be measured
         fs:SetText(text)
         local c = COLOURS[status] or COLOURS[0]
         fs:SetTextColor(c[1], c[2], c[3])
         fs:Show()
+        shown[#shown + 1] = { fs = fs, x = 8 + (indent and 10 or 0) }
     end
     for _, sec in ipairs(sections) do
         local head = sec.title
@@ -92,10 +94,25 @@ function G.Draw(sections, overall)
     end
     if n == 0 then line("Nothing to check yet.", L.OK, false) end
     for i = n + 1, MAX_LINES do f.lines[i]:Hide() end
-    f:SetHeight(32 + math.min(n, MAX_LINES) * LINE_H)
     local c = COLOURS[overall]
     f.title:SetText(("Sanctum - level %d goals"):format(UnitLevel("player")))
     f.title:SetTextColor(c[1], c[2], c[3])
+    -- Width: fit the widest line (and the title beside the close button), within MIN_W..MAX_W.
+    local w = MIN_W
+    for _, s in ipairs(shown) do w = math.max(w, s.x + (s.fs:GetStringWidth() or 0) + 10) end
+    w = math.max(w, (f.title:GetStringWidth() or 0) + 40)
+    w = math.min(math.ceil(w), MAX_W)
+    f:SetWidth(w)
+    -- Lay lines out top to bottom; anything still too wide wraps and takes the height it needs.
+    local y = -24
+    for _, s in ipairs(shown) do
+        s.fs:ClearAllPoints()
+        s.fs:SetWidth(w - s.x - 8)
+        s.fs:SetPoint("TOPLEFT", f, "TOPLEFT", s.x, y)
+        y = y - math.max(LINE_H, math.ceil(s.fs:GetStringHeight() or LINE_H))
+    end
+    f:SetHeight(8 - y)
+    G.width = w
 end
 
 function G.Refresh()
@@ -112,10 +129,17 @@ function G.Queue()
     C_Timer.After(0.5, function() pending = false; G.Refresh() end)
 end
 
-function G.Toggle()
-    ns.db.goals.shown = not ns.db.goals.shown
+-- Single place that shows or hides the panel, so the saved setting, the panel
+-- and the Options checkbox can never disagree.
+function G.SetShown(v)
+    ns.db.goals.shown = v and true or false
     G.frame:SetShown(ns.db.goals.shown)
     G.Refresh()
+    if ns.Options and ns.Options.Refresh then ns.Options.Refresh() end
+end
+
+function G.Toggle()
+    G.SetShown(not ns.db.goals.shown)
 end
 
 function G.Reposition()
@@ -144,7 +168,8 @@ function G.Init()
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetSize(20, 20)
     close:SetPoint("TOPRIGHT", 0, 0)
-    close:SetScript("OnClick", function() G.Toggle() end)
+    close:SetScript("OnClick", function() G.SetShown(false) end)
+    f.closeButton = close
     f.lines = {}
     for i = 1, MAX_LINES do
         local fs = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")

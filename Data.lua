@@ -145,7 +145,48 @@ D.goals = {
         { id = 16, name = "Main Hand", emptyFrom = 1,  enchant = true },
         { id = 18, name = "Wand",      emptyFrom = 5 },
     },
-    enchantFromLevel = 40,  -- enchants flagged from this level (configurable in SanctumDB)
+    enchantFromLevel = 15,  -- enchants flagged from this level (configurable in SanctumDB)
+
+    -- Healer enchant suggestions per slot, cheapest to best. lvl = the character level
+    -- at which the enchant's materials are realistically available. Names are the
+    -- recipe names (Enchant <Slot> - <name>). Researched 5 Oct 2026 from the Forever
+    -- client enchant table (foreverchanges.pro), which renamed the Mana chest line to
+    -- Intellect and added the Healing Power bracers and caster weapon procs.
+    -- Gloves have no healer enchant before the Ahn'Qiraj Healing Power one, and
+    -- one-handers nothing before Revelation, so those slots aren't flagged earlier.
+    enchants = {
+        ["Back"] = {
+            { lvl = 10, name = "Minor Protection" }, { lvl = 15, name = "Lesser Protection" },
+            { lvl = 25, name = "Defense" }, { lvl = 38, name = "Greater Defense" },
+            { lvl = 55, name = "Superior Defense" },
+        },
+        ["Chest"] = {
+            { lvl = 8, name = "Minor Intellect" }, { lvl = 12, name = "Lesser Intellect" },
+            { lvl = 22, name = "Intellect" }, { lvl = 32, name = "Greater Intellect" },
+            { lvl = 45, name = "Superior Intellect" }, { lvl = 55, name = "Major Intellect" },
+        },
+        ["Wrist"] = {
+            { lvl = 10, name = "Minor Spirit" }, { lvl = 22, name = "Lesser Intellect" },
+            { lvl = 35, name = "Lesser Healing Power (Gorhak, Desolace)" },
+            { lvl = 58, name = "Healing Power (Argent Dawn revered)" },
+        },
+        ["Hands"] = {
+            { lvl = 60, name = "Healing Power (Ahn'Qiraj)" },
+        },
+        ["Feet"] = {
+            { lvl = 15, name = "Minor Stamina" }, { lvl = 28, name = "Lesser Stamina" },
+            { lvl = 40, name = "Minor Speed" },
+        },
+        ["Main Hand"] = {
+            { lvl = 22, name = "Revelation (Merchant's Favor)" },
+            { lvl = 58, name = "Mighty Intellect (Thorium Brotherhood)" },
+            { lvl = 60, name = "Healing Power (Molten Core)" },
+        },
+        ["Two-Hand"] = {
+            { lvl = 15, name = "Lesser Intellect" }, { lvl = 58, name = "Major Intellect" },
+            { lvl = 60, name = "Mighty Healing Power (Merchant's Favor)" },
+        },
+    },
     staleWarn = 10,         -- item required level this far below yours -> amber
     staleBad  = 16,         -- ...this far below -> red
     durWarn = 0.40,

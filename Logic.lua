@@ -180,7 +180,14 @@ function L.EvaluateGear(snap, G, class)
                     elseif pct <= G.durWarn then st = worst(st, L.WARN); msgs[#msgs + 1] = ("durability %d%%"):format(pct * 100) end
                 end
                 if slot.enchant and level >= (snap.enchantFromLevel or G.enchantFromLevel) and not s.enchanted then
-                    st = worst(st, L.BAD); msgs[#msgs + 1] = "no enchant"
+                    -- With a suggestion list, only flag once something on it is reachable at this level.
+                    local list = L.EnchantList(G, slot, s)
+                    local pick = L.EnchantFor(list, level)
+                    if not list then
+                        st = worst(st, L.BAD); msgs[#msgs + 1] = "no enchant"
+                    elseif pick then
+                        st = worst(st, L.BAD); msgs[#msgs + 1] = "no enchant - get " .. pick
+                    end
                 end
             end
             if st ~= L.OK then
@@ -190,6 +197,23 @@ function L.EvaluateGear(snap, G, class)
         end
     end
     return { title = "Gear", status = status, items = items, compact = true, checked = checked }
+end
+
+-- Suggestion list for a gear slot (two-handers have their own), or nil.
+function L.EnchantList(G, slot, s)
+    local e = G and G.enchants
+    if not e then return nil end
+    if slot.id == 16 and s and s.twoHand then return e["Two-Hand"] end
+    return e[slot.name]
+end
+
+-- Best enchant on the list available at this level, or nil.
+function L.EnchantFor(list, level)
+    local best
+    for _, t in ipairs(list or {}) do
+        if level >= t.lvl and (not best or t.lvl >= best.lvl) then best = t end
+    end
+    return best and best.name
 end
 
 function L.EvaluateConsumables(snap, G, class)

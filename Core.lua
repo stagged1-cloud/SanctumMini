@@ -2,7 +2,7 @@
 -- Namespace, saved variables, API compat shims, event bus, combat queue, slash commands.
 
 local ADDON, ns = ...
-ns.version = "0.5.0"
+ns.version = "0.5.1"
 ns.Data = ns.Data or {}
 ns.Logic = ns.Logic or {}
 
@@ -88,6 +88,20 @@ function C.GetItemLevels(item)
     if not fn then return end
     local ok, _, _, _, ilvl, req = pcall(fn, item)
     if ok then return ilvl, req end
+end
+
+-- True when the item is a two-handed weapon (staves etc.), nil when unknown.
+function C.IsTwoHand(item)
+    local inst = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
+    if inst then
+        local ok, _, _, _, loc = pcall(inst, item)
+        if ok and loc then return loc == "INVTYPE_2HWEAPON" end
+    end
+    local fn = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+    if fn then
+        local ok, _, _, _, _, _, _, _, _, loc = pcall(fn, item)
+        if ok and loc then return loc == "INVTYPE_2HWEAPON" end
+    end
 end
 
 function C.NumFreeBagSlots()
@@ -193,7 +207,7 @@ local defaults = {
     frames = { x = -320, y = 60, point = "CENTER", locked = false, scale = 1, width = 130, height = 40,
                spacing = 3, classColours = true, showMana = true, showSelfFirst = true },
     minimap = { shown = true, angle = 200 },
-    goals = { shown = true, x = 320, y = 120, point = "CENTER", enchantFromLevel = 40, onlyProblems = false },
+    goals = { shown = true, x = 320, y = 120, point = "CENTER", enchantFromLevel = 15, onlyProblems = false },
 }
 
 local function applyDefaults(dst, src)
@@ -222,6 +236,11 @@ end
 local function initDB()
     SanctumDB = SanctumDB or {}
     applyDefaults(SanctumDB, defaults)
+    -- 0.5.1: enchant checks start at 15 (was 40) now that they name the enchant to get. Once only.
+    if not SanctumDB.goals.enchant15 then
+        if SanctumDB.goals.enchantFromLevel > 15 then SanctumDB.goals.enchantFromLevel = 15 end
+        SanctumDB.goals.enchant15 = true
+    end
     SanctumCharDB = SanctumCharDB or {}
     local _, class = UnitClass("player")
     ns.class = class
