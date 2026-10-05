@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.3] - 2026-10-05 (Beta, WoW: Forever 1.60.1)
+
+- Cast log hint text tidied. No behaviour change
+
 ## [0.4.2] - 2026-10-05 (Beta, WoW: Forever 1.60.1)
 
 First public build, published as **Sanctum Mini** (addon folder `SanctumMini`).

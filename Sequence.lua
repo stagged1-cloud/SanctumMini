@@ -221,7 +221,7 @@ function S.ToggleLog()
         clear:SetScript("OnClick", function() ns.cdb.seqLog = {}; S.RefreshLog() end)
         local hint = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         hint:SetPoint("LEFT", clear, "RIGHT", 10, 0)
-        hint:SetText("|cff999999Saved on logout - Claude can read it from disk.|r")
+        hint:SetText("|cff999999Saved on logout to SavedVariables.|r")
         f:SetScript("OnShow", function(self) self:Raise(); S.RefreshLog() end)
         f:Hide()
         S.logFrame = f
