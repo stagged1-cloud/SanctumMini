@@ -5,6 +5,8 @@
 ## Version: 0.4.2
 ## SavedVariables: SanctumDB
 ## SavedVariablesPerCharacter: SanctumCharDB
+## X-Curse-Project-ID: 1728928
+## X-Website: https://github.com/stagged1-cloud/SanctumMini
 
 Core.lua
 Data.lua
