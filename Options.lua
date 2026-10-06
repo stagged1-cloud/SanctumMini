@@ -585,9 +585,24 @@ local function build()
     local logB = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
     logB:SetSize(110, 22); logB:SetPoint("LEFT", tal, "RIGHT", 8, 0); logB:SetText("Cast log")
     logB:SetScript("OnClick", function() ns.Sequence.ToggleLog() end)
+    local bwB = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    bwB:SetSize(120, 22); bwB:SetPoint("LEFT", logB, "RIGHT", 8, 0); bwB:SetText("Buff watch")
+    bwB:SetScript("OnClick", function(self) ns.BuffWatch.ToggleMenu(self) end)
+    bwB:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("Buff watch")
+        GameTooltip:AddLine("Pick self buffs to show above your own bar.", 1, 1, 1)
+        GameTooltip:AddLine("An icon flashes when its buff is missing or falls off.", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    bwB:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    f.buffWatchButton = bwB
 
     f:SetScript("OnShow", O.Refresh)
-    f:SetScript("OnHide", function() if O.picker then O.picker:Hide() end end)
+    f:SetScript("OnHide", function()
+        if O.picker then O.picker:Hide() end
+        if ns.BuffWatch.menu then ns.BuffWatch.menu:Hide() end
+    end)
     f:Hide()
     O.frame = f
 end

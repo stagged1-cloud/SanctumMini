@@ -557,6 +557,163 @@ T("EvaluateGoals overall", function()
 end)
 
 ---------------------------------------------------------------------------
+print("== Logic: training (0.6.0)")
+local TDp = ns.TalentData
+local function trainingSnap(level, knownList, cache)
+    local k = {}
+    for _, n in ipairs(knownList or {}) do k[n] = true end
+    return { level = level, known = k,
+             training = { levels = TDp.PRIEST.trainer, skip = TDp.PRIEST.trainerSkip, cache = cache } }
+end
+-- TR1: no trainer visit yet - static rank 1 spells you are high enough for and don't know
+T("Training: static rank 1 spells due, plus the visit-trainer nudge", function()
+    local sec = L.EvaluateTraining(trainingSnap(8, { "Smite", "Lesser Heal", "Power Word: Fortitude", "Shoot",
+        "Shadow Word: Pain", "Power Word: Shield" }), D.goals, "PRIEST")
+    eq(sec.title, "Training"); eq(sec.status, L.BAD)
+    eq(sec.items[1].text, "Trainer: Fade - level 8")      -- same level sorts by name
+    eq(sec.items[2].text, "Trainer: Renew - level 8")
+    eq(sec.items[#sec.items].text, "Open your class trainer once to track new ranks")
+    eq(sec.items[#sec.items].status, L.WARN)
+end)
+-- TR2: spells above your level are never listed
+T("Training: nothing above your level", function()
+    local sec = L.EvaluateTraining(trainingSnap(1, { "Smite", "Lesser Heal", "Power Word: Fortitude", "Shoot" }), D.goals, "PRIEST")
+    eq(#sec.items, 1, "only the nudge"); eq(sec.status, L.WARN)
+end)
+-- TR3: racials (race-only) are skipped in the static check
+T("Training: racials are not demanded of every priest", function()
+    local sec = L.EvaluateTraining(trainingSnap(10, {}), D.goals, "PRIEST")
+    for _, it in ipairs(sec.items) do
+        assert(not it.text:find("Starshards") and not it.text:find("Desperate Prayer") and not it.text:find("Divine Grace"), it.text)
+    end
+end)
+-- TR4: with a trainer cache: ranks ready at your level, used and too-high ones left out, cost in the title
+T("Training: trainer cache lists ready ranks with cost", function()
+    local cache = { services = {
+        { name = "Heal", rank = "Rank 2", req = 22, state = "unavailable", cost = 1500 },
+        { name = "Renew", rank = "Rank 3", req = 20, state = "available", cost = 1000 },
+        { name = "Smite", rank = "Rank 4", req = 22, state = "unavailable", cost = 900 },
+        { name = "Lesser Heal", rank = "Rank 3", req = 10, state = "used", cost = 100 },
+        { name = "Flash Heal", rank = "Rank 3", req = 28, state = "unavailable", cost = 5000 },
+    } }
+    local sec = L.EvaluateTraining(trainingSnap(22, {}, cache), D.goals, "PRIEST")
+    eq(sec.ready, 3)
+    eq(sec.items[1].text, "Trainer: Renew (Rank 3) - level 20")
+    eq(sec.items[2].text, "Trainer: Heal (Rank 2) - level 22")
+    eq(sec.items[3].text, "Trainer: Smite (Rank 4) - level 22")
+    eq(sec.title, "Training (3 ready, 34s)")
+    for _, it in ipairs(sec.items) do assert(not it.text:find("Open your class trainer"), "no nudge once cached") end
+end)
+-- TR5: cache present and nothing due -> green "Nothing new to train"
+T("Training: up to date is green", function()
+    local cache = { services = { { name = "Heal", rank = "Rank 2", req = 30, state = "unavailable", cost = 1 } } }
+    local sec = L.EvaluateTraining(trainingSnap(22, {}, cache), D.goals, "PRIEST")
+    eq(sec.status, L.OK); eq(#sec.items, 1); eq(sec.items[1].text, "Nothing new to train")
+end)
+-- TR6: long lists collapse to "...and N more"
+T("Training: more than 6 ready collapses", function()
+    local sv = {}
+    for i = 1, 9 do sv[i] = { name = "Spell" .. i, rank = "Rank 2", req = 10, state = "available", cost = 0 } end
+    local sec = L.EvaluateTraining(trainingSnap(20, {}, { services = sv }), D.goals, "PRIEST")
+    eq(#sec.items, 7); eq(sec.items[7].text, "...and 3 more at your trainer")
+end)
+-- TR7: class quest spells are amber with their own wording, and show even with a cache
+T("Training: class quest spells (Druid Bear Form)", function()
+    local snap = { level = 10, known = { Wrath = true }, training = { levels = TDp.DRUID.trainer,
+        quest = TDp.DRUID.trainerQuest, cache = { services = {} } } }
+    local sec = L.EvaluateTraining(snap, D.goals, "DRUID")
+    local found
+    for _, it in ipairs(sec.items) do if it.text == "Class quest: Bear Form - from level 10" then found = it end end
+    assert(found, "bear form quest line"); eq(found.status, L.WARN)
+    for _, it in ipairs(sec.items) do assert(not it.text:find("Trainer: Bear Form"), "never sent to the trainer") end
+end)
+-- TR8: no training data (non-healer) -> no section
+T("Training: no data, no section", function()
+    eq(L.EvaluateTraining({ level = 10 }, D.goals, "WARRIOR"), nil)
+end)
+-- TR9: trainer list -> cache keeps class spells only, rejects weapon/profession trainers
+T("TrainerCacheFrom keeps class spells, rejects other trainers", function()
+    local levels = TDp.PRIEST.trainer
+    local c = L.TrainerCacheFrom({
+        { name = "Renew", rank = "Rank 3", state = "available", req = 20, cost = 1000 },
+        { name = "Mind Flay", rank = "Rank 2", state = "unavailable", req = 28, cost = 0 },  -- ranked talent spell
+        { name = "Staves", rank = "", state = "available", req = 1, cost = 1000 },           -- weapon skill
+        { name = "Holy", state = "header" },
+    }, levels, {})
+    eq(#c.services, 2); eq(c.services[1].name, "Renew"); eq(c.services[2].name, "Mind Flay")
+    eq(L.TrainerCacheFrom({ { name = "Staves", rank = "", state = "available", req = 1 } }, levels, {}), nil,
+        "weapon master is not a class trainer")
+    eq(L.TrainerCacheFrom(nil, levels, {}), nil)
+end)
+-- TR10: money formatting
+T("FormatMoney", function()
+    eq(L.FormatMoney(0), "0c"); eq(L.FormatMoney(5), "5c"); eq(L.FormatMoney(1500), "15s")
+    eq(L.FormatMoney(21005), "2g 10s 5c"); eq(L.FormatMoney(nil), "0c")
+end)
+-- TR11: the goals panel includes Training right after Gear
+T("EvaluateGoals includes Training after Gear", function()
+    local snap = trainingSnap(8, {}); snap.slots = fullGear(6, true)
+    local sections = L.EvaluateGoals(snap, D.goals, "PRIEST")
+    eq(sections[1].title, "Gear"); eq(sections[2].title, "Training")
+end)
+
+print("== Logic: buff watch (0.6.0)")
+-- BW1: up / missing / time left, first matching aura wins
+T("BuffWatchState: up with time left, missing, accept list", function()
+    local tracked = {
+        { key = "Power Word: Fortitude", accept = { "Power Word: Fortitude", "Prayer of Fortitude" }, icon = 1 },
+        { key = "Inner Fire", accept = { "Inner Fire" }, icon = 2 },
+        { key = "Well Fed", accept = { "Well Fed" } },
+    }
+    local auras = { ["Prayer of Fortitude"] = { icon = 9, expirationTime = 1600 }, ["Well Fed"] = { icon = 7, expirationTime = 0 } }
+    local st = L.BuffWatchState(tracked, auras, 1000)
+    eq(st[1].up, true); eq(st[1].remaining, 600); eq(st[1].icon, 9, "live icon when up")
+    eq(st[2].up, false); eq(st[2].icon, 2, "saved icon when missing"); eq(st[2].remaining, nil)
+    eq(st[3].up, true); eq(st[3].remaining, nil, "no expiry -> no timer")
+end)
+-- BW2: weapon imbue uses the weapon enchant, not auras
+T("BuffWatchState: weapon imbue", function()
+    local tracked = { { key = "Weapon imbue", weapon = true } }
+    eq(L.BuffWatchState(tracked, {}, 0, { mainHand = true, mainHandMs = 90000 })[1].remaining, 90)
+    eq(L.BuffWatchState(tracked, {}, 0, { mainHand = false })[1].up, false)
+    eq(L.BuffWatchState(tracked, {}, 0, nil)[1].up, false, "no weapon info -> missing")
+end)
+-- BW3: empty / nil inputs are safe
+T("BuffWatchState: empty inputs", function()
+    eq(#L.BuffWatchState(nil, nil, nil), 0)
+    eq(L.BuffWatchState({ { key = "X" } }, nil, nil)[1].up, false, "accept defaults to key")
+end)
+-- BW4: dropdown rows: learnt class buffs, Well Fed, then current auras, ticks from saved list
+T("BuffWatchCandidates: known class buffs, Well Fed, current buffs", function()
+    local known = { ["Power Word: Fortitude"] = true, ["Inner Fire"] = true }
+    local current = { ["Arcane Intellect"] = 135932, ["Prayer of Fortitude"] = 1, ["Well Fed"] = 2 }
+    local tracked = { { key = "Inner Fire" } }
+    local rows = L.BuffWatchCandidates(D.buffWatch.PRIEST, known, current, tracked)
+    local labels = {}
+    for _, r in ipairs(rows) do labels[#labels + 1] = r.label end
+    eq(table.concat(labels, ","), "Power Word: Fortitude,Inner Fire,Well Fed,Arcane Intellect",
+        "Prayer of Fortitude folded into PW:F, unlearnt buffs hidden")
+    eq(rows[2].checked, true); eq(rows[1].checked, false)
+    eq(rows[4].icon, 135932)
+end)
+-- BW5: a tracked buff stays in the list after it falls off you
+T("BuffWatchCandidates: tracked aura buff stays listed when gone", function()
+    local rows = L.BuffWatchCandidates(D.buffWatch.PRIEST, {}, {}, { { key = "Arcane Intellect", label = "Arcane Intellect" } })
+    eq(rows[#rows].key, "Arcane Intellect"); eq(rows[#rows].checked, true)
+end)
+-- BW6: Shaman imbue entry appears once any imbue is known; Paladin grouped entries
+T("BuffWatchCandidates: needs lists and grouped entries", function()
+    local rows = L.BuffWatchCandidates(D.buffWatch.SHAMAN, { ["Rockbiter Weapon"] = true }, {}, {})
+    eq(rows[1].key, "Weapon imbue"); eq(rows[1].weapon, true)
+    local prow = L.BuffWatchCandidates(D.buffWatch.PALADIN, { ["Devotion Aura"] = true, ["Seal of Righteousness"] = true }, {}, {})
+    eq(prow[1].label, "Aura (any)"); eq(prow[2].label, "Seal (any)")
+end)
+-- BW7: time formatting
+T("FormatRemaining", function()
+    eq(L.FormatRemaining(nil), ""); eq(L.FormatRemaining(0), ""); eq(L.FormatRemaining(45.7), "45s")
+    eq(L.FormatRemaining(90), "2m"); eq(L.FormatRemaining(1799), "30m"); eq(L.FormatRemaining(3600), "1h")
+end)
+
 print("== Logic: talents for every healing class")
 local HEALERS = { "PRIEST", "DRUID", "PALADIN", "SHAMAN" }
 for _, cls in ipairs(HEALERS) do
@@ -1160,6 +1317,118 @@ T("Priority mode builds a single macro and logs as priority", function()
     env.SanctumCharDB.sequence.mode = "sequential"
     sns.Sequence.Build()
     eq(env.SanctumSeqButton:GetAttribute("sanc-n"), 2)
+end)
+
+
+print("== Smoke: training scan and buff watch (0.6.0)")
+T("Trainer visit is cached and the goals panel lists the ready rank", function()
+    env.UnitLevel = function() return 20 end
+    local svc = {
+        { "Renew", "Rank 3", "available", 20, 1000 },
+        { "Heal", "Rank 2", "unavailable", 22, 1500 },
+        { "Staves", "", "available", 1, 1000 },
+    }
+    local filters = { available = 1, unavailable = 0 }
+    env.GetNumTrainerServices = function() return #svc end
+    env.GetTrainerServiceInfo = function(i)
+        local s = svc[i]
+        if s[3] == "unavailable" and filters.unavailable == 0 then return nil end
+        return s[1], s[2], s[3]
+    end
+    env.GetTrainerServiceLevelReq = function(i) return svc[i][4] end
+    env.GetTrainerServiceCost = function(i) return svc[i][5] end
+    env.GetTrainerServiceTypeFilter = function(t) return filters[t] end
+    env.SetTrainerServiceTypeFilter = function(t, v) filters[t] = v end
+    env.IsTradeskillTrainer = function() return false end
+    fire("TRAINER_SHOW")
+    local c = env.SanctumCharDB.trainer
+    assert(c and c.services, "cached")
+    eq(#c.services, 2, "weapon skill dropped"); eq(c.services[2].name, "Heal", "unavailable read too")
+    eq(filters.unavailable, 0, "player's filter put back")
+    sns.Goals.SetShown(true)
+    local snap = sns.Goals.Snapshot()
+    local sec = sns.Logic.EvaluateTraining(snap, sns.Data.goals, "PRIEST")
+    eq(sec.items[1].text, "Trainer: Renew (Rank 3) - level 20")
+    -- the panel draws it
+    sns.Goals.Refresh()
+    local seen = false
+    for _, fs in ipairs(sns.Goals.frame.lines) do if fs:GetText():find("Renew %(Rank 3%)") then seen = true end end
+    assert(seen, "Training line drawn")
+    -- a profession trainer never overwrites the cache
+    env.IsTradeskillTrainer = function() return true end
+    svc = {}
+    fire("TRAINER_SHOW")
+    eq(#env.SanctumCharDB.trainer.services, 2)
+    env.IsTradeskillTrainer = function() return false end
+end)
+
+T("Buff watch: pick from dropdown, icon shows, flashes when missing", function()
+    local BWm = sns.BuffWatch
+    assert(BWm.ready and BWm.holder, "buff watch started")
+    eq(BWm.holder:IsShown(), false, "nothing tracked, nothing shown")
+    -- the aura API: Inner Fire up for 10 minutes
+    local auras = { { name = "Inner Fire", icon = 135926, expirationTime = 1600.25 } }
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, filter) if filter == "HELPFUL" then return auras[i] end end }
+    env.SlashCmdList.SANCTUM("buffs")
+    local m = BWm.menu
+    assert(m and m:IsShown(), "dropdown open")
+    local row
+    for _, r in ipairs(m.rows) do if r.row and r.row.key == "Inner Fire" then row = r end end
+    assert(row, "Inner Fire offered (currently on you)")
+    row:SetChecked(true); row:GetScript("OnClick")(row)
+    eq(env.SanctumCharDB.buffWatch.list[1].key, "Inner Fire")
+    eq(BWm.holder:IsShown(), true)
+    local icon = BWm.icons[1]
+    eq(icon:IsShown(), true); eq(icon.state.up, true); eq(icon.time:GetText(), "10m")
+    eq(BWm.flashing, false)
+    -- it falls off -> missing, flashing
+    auras = {}
+    fire("UNIT_AURA", "player")
+    eq(icon.state.up, false); eq(BWm.flashing, true); eq(icon.time:GetText(), "")
+    -- party aura events never touch it
+    auras = { { name = "Inner Fire", icon = 135926, expirationTime = 1600.25 } }
+    fire("UNIT_AURA", "party1")
+    eq(icon.state.up, false, "party1 aura ignored")
+    fire("UNIT_AURA", "player")
+    eq(icon.state.up, true)
+    -- hide while up
+    env.SanctumCharDB.buffWatch.hideWhileUp = true
+    BWm.Update()
+    eq(BWm.holder:IsShown(), false, "all up and hidden")
+    env.SanctumCharDB.buffWatch.hideWhileUp = false
+    -- combat block: an unreadable aura list keeps the last state instead of flashing
+    env.C_UnitAuras = { GetAuraDataByIndex = function() error("Auras cannot be accessed when secret") end }
+    BWm.Update()
+    eq(icon.state.up, true, "blocked read keeps last known state")
+    -- untick (rows re-sort once something is tracked, so find it again)
+    for _, r in ipairs(m.rows) do if r.row and r.row.key == "Inner Fire" then row = r end end
+    eq(row:GetChecked(), true, "shown ticked")
+    row:SetChecked(false); row:GetScript("OnClick")(row)
+    eq(#env.SanctumCharDB.buffWatch.list, 0); eq(BWm.holder:IsShown(), false)
+    m:Hide()
+    env.C_UnitAuras = nil
+end)
+
+T("Buff watch sits above your bar, below it when you're at the bottom", function()
+    local BWm, Fr = sns.BuffWatch, sns.Frames
+    local where
+    BWm.holder.SetPoint = function(_, p, rel, rp, x, y) where = { p, rel, rp, x, y } end
+    env.SanctumDB.frames.showSelfFirst = true; Fr.Layout()
+    eq(where[1], "BOTTOMLEFT"); eq(where[2], Fr.byUnit.player)
+    Fr.SetLocked(false); eq(where[5], 19, "clears the drag header when unlocked")
+    Fr.SetLocked(true); eq(where[5], 3)
+    env.SanctumDB.frames.showSelfFirst = false; Fr.Layout()
+    eq(where[1], "TOPLEFT"); eq(where[3], "BOTTOMLEFT")
+    env.SanctumDB.frames.showSelfFirst = true; Fr.Layout()
+end)
+
+T("Options has a Buff watch button that opens the dropdown", function()
+    sns.Options.frame:Show()
+    local b = sns.Options.frame.buffWatchButton
+    assert(b, "button"); b:GetScript("OnClick")(b)
+    assert(sns.BuffWatch.menu:IsShown())
+    sns.Options.frame:GetScript("OnHide")()
+    eq(sns.BuffWatch.menu:IsShown(), false, "closing Options closes the dropdown")
 end)
 
 print(("\n%d passed, %d failed"):format(pass, fail))

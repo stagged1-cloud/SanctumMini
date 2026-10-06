@@ -298,10 +298,194 @@ function L.EvaluateReagents(snap, G, class)
     return { title = "Reagents & bags", status = status, items = items }
 end
 
+-- Training: what you can learn now.
+-- snap.training = {
+--   levels = { [spell] = level }  rank-1 trainer levels (TalentData),
+--   skip   = { [spell] = true }   racials (not every race gets them),
+--   quest  = { [spell] = true }   learned from a class quest, not the trainer,
+--   cache  = { services = { { name, rank, req, state, cost } } } from the last trainer visit,
+-- }
+-- With a trainer cache, the cache is the source of truth for trainer spells and ranks.
+-- Without one, rank 1 spells come from the static levels and a one-off nudge asks you
+-- to open the trainer so higher ranks can be tracked.
+L.TRAINING_MAX_LINES = 6
+
+function L.EvaluateTraining(snap, G, class)
+    local tr = snap.training
+    if not tr or not tr.levels then return nil end
+    local level, known = snap.level or 1, snap.known or {}
+    local ready, quests, cost = {}, {}, 0
+    local cache = tr.cache and tr.cache.services
+    if cache then
+        for _, s in ipairs(cache) do
+            local req = tonumber(s.req) or 0
+            local trained = s.state == "used" or ((s.rank == nil or s.rank == "") and known[s.name])
+            if not trained and req <= level and s.name then
+                ready[#ready + 1] = { name = s.name, rank = s.rank, req = req }
+                cost = cost + (tonumber(s.cost) or 0)
+            end
+        end
+    end
+    for spell, lvl in pairs(tr.levels) do
+        if lvl <= level and not known[spell] and not (tr.skip and tr.skip[spell]) then
+            if tr.quest and tr.quest[spell] then
+                quests[#quests + 1] = { name = spell, req = lvl }
+            elseif not cache then
+                ready[#ready + 1] = { name = spell, req = lvl }
+            end
+        end
+    end
+    local function byLevel(a, b)
+        if a.req ~= b.req then return a.req < b.req end
+        if a.name ~= b.name then return a.name < b.name end
+        return (a.rank or "") < (b.rank or "")
+    end
+    table.sort(ready, byLevel); table.sort(quests, byLevel)
+
+    local items, status = {}, L.OK
+    local shown = 0
+    for _, r in ipairs(ready) do
+        shown = shown + 1
+        if shown <= L.TRAINING_MAX_LINES then
+            local rank = (r.rank and r.rank ~= "") and (" (" .. r.rank .. ")") or ""
+            items[#items + 1] = { text = ("Trainer: %s%s - level %d"):format(r.name, rank, r.req), status = L.BAD }
+        end
+    end
+    if #ready > L.TRAINING_MAX_LINES then
+        items[#items + 1] = { text = ("...and %d more at your trainer"):format(#ready - L.TRAINING_MAX_LINES), status = L.BAD }
+    end
+    if #ready > 0 then status = L.BAD end
+    for _, q in ipairs(quests) do
+        items[#items + 1] = { text = ("Class quest: %s - from level %d"):format(q.name, q.req), status = L.WARN }
+        status = worst(status, L.WARN)
+    end
+    if not cache then
+        items[#items + 1] = { text = "Open your class trainer once to track new ranks", status = L.WARN }
+        status = worst(status, L.WARN)
+    elseif #items == 0 then
+        items[#items + 1] = { text = "Nothing new to train", status = L.OK }
+    end
+    local title = "Training"
+    if #ready > 0 and cost > 0 then title = ("Training (%d ready, %s)"):format(#ready, L.FormatMoney(cost)) end
+    return { title = title, status = status, items = items, cost = cost, ready = #ready }
+end
+
+-- Copper -> "1g 20s 5c" (zero parts dropped).
+function L.FormatMoney(copper)
+    copper = math.floor(tonumber(copper) or 0)
+    if copper <= 0 then return "0c" end
+    local g, sv, c = math.floor(copper / 10000), math.floor(copper / 100) % 100, copper % 100
+    local parts = {}
+    if g > 0 then parts[#parts + 1] = g .. "g" end
+    if sv > 0 then parts[#parts + 1] = sv .. "s" end
+    if c > 0 then parts[#parts + 1] = c .. "c" end
+    return table.concat(parts, " ")
+end
+
+-- Trainer service list -> cache entries. services = { { name, rank, state, req, cost } }
+-- as read from the trainer window. Keeps class spells only: names the static trainer
+-- table knows, spells already in the spellbook, or anything with a rank.
+-- Returns nil when nothing looks like a class spell (weapon master, profession trainer).
+function L.TrainerCacheFrom(services, levels, known)
+    local out, classLike = {}, false
+    for _, s in ipairs(services or {}) do
+        if s.name and s.state ~= "header" then
+            local isRank = type(s.rank) == "string" and s.rank:find("%d") ~= nil
+            local inTable = levels and levels[s.name] ~= nil
+            if inTable then classLike = true end
+            if inTable or isRank or (known and known[s.name]) then
+                out[#out + 1] = { name = s.name, rank = (s.rank ~= "" and s.rank) or nil, state = s.state,
+                                  req = tonumber(s.req) or 0, cost = tonumber(s.cost) or 0 }
+            end
+        end
+    end
+    if not classLike then return nil end
+    return { services = out }
+end
+
+---------------------------------------------------------------------------
+-- Buff watch (self only)
+---------------------------------------------------------------------------
+-- Seconds -> short label: 1h, 12m, 45s.
+function L.FormatRemaining(sec)
+    if type(sec) ~= "number" or sec <= 0 then return "" end
+    if sec >= 3600 then return ("%dh"):format(math.floor(sec / 3600 + 0.5)) end
+    if sec >= 60 then return ("%dm"):format(math.floor(sec / 60 + 0.5)) end
+    return ("%ds"):format(math.floor(sec))
+end
+
+-- tracked = { { key, label, accept = {names}, weapon = bool, icon } }
+-- auras   = { [name] = { icon, expirationTime, duration } } (your helpful auras)
+-- weapon  = { mainHand = bool, mainHandMs = number } (temporary weapon enchant)
+-- Returns { { key, label, icon, up, remaining } } in tracked order.
+function L.BuffWatchState(tracked, auras, now, weapon)
+    local out = {}
+    auras = auras or {}
+    for _, t in ipairs(tracked or {}) do
+        local st = { key = t.key, label = t.label or t.key, icon = t.icon, up = false }
+        if t.weapon then
+            st.up = weapon and weapon.mainHand and true or false
+            if st.up and weapon.mainHandMs then st.remaining = weapon.mainHandMs / 1000 end
+        else
+            for _, name in ipairs(t.accept or { t.key }) do
+                local a = auras[name]
+                if a then
+                    st.up = true
+                    st.icon = a.icon or st.icon
+                    local exp = tonumber(a.expirationTime)
+                    if exp and exp > 0 and now then st.remaining = math.max(0, exp - now) end
+                    break
+                end
+            end
+        end
+        out[#out + 1] = st
+    end
+    return out
+end
+
+-- Rows for the Buff watch dropdown.
+-- classList = D.buffWatch[class]; known = set of spell names; current = { [name] = icon }
+-- tracked = saved list. Class buffs show once you know any spell that casts them
+-- (or when already tracked); then Well Fed; then anything currently on you.
+-- Returns { { key, label, accept, weapon, icon, checked } }.
+function L.BuffWatchCandidates(classList, known, current, tracked)
+    local isTracked = {}
+    for _, t in ipairs(tracked or {}) do isTracked[t.key] = true end
+    local rows, covered = {}, {}
+    local function add(e)
+        if covered[e.key] then return end
+        e.checked = isTracked[e.key] or false
+        rows[#rows + 1] = e
+        covered[e.key] = true
+        for _, n in ipairs(e.accept or {}) do covered[n] = true end
+    end
+    for _, e in ipairs(classList or {}) do
+        local learnt = false
+        for _, n in ipairs(e.needs or e.accept or {}) do if known and known[n] then learnt = true end end
+        if learnt or isTracked[e.key] then
+            add({ key = e.key, label = e.label or e.key, accept = e.accept, weapon = e.weapon, icon = e.icon })
+        end
+    end
+    add({ key = "Well Fed", label = "Well Fed", accept = { "Well Fed" } })
+    -- Tracked entries that came from "currently on you" stay listed after they fall off.
+    for _, t in ipairs(tracked or {}) do
+        if not covered[t.key] then add({ key = t.key, label = t.label or t.key, accept = t.accept or { t.key },
+                                         weapon = t.weapon, icon = t.icon }) end
+    end
+    local names = {}
+    for name in pairs(current or {}) do if not covered[name] then names[#names + 1] = name end end
+    table.sort(names)
+    for _, name in ipairs(names) do
+        local icon = current[name]
+        add({ key = name, label = name, accept = { name }, icon = icon ~= true and icon or nil })
+    end
+    return rows
+end
+
 -- Returns ordered list of sections plus overall status.
 function L.EvaluateGoals(snap, G, class)
     local sections, overall = {}, L.OK
-    local fns = { L.EvaluateGear, L.EvaluateConsumables, L.EvaluateBuffs, L.EvaluateReagents }
+    local fns = { L.EvaluateGear, L.EvaluateTraining, L.EvaluateConsumables, L.EvaluateBuffs, L.EvaluateReagents }
     for _, fn in ipairs(fns) do
         local sec = fn(snap, G, class)
         if sec then

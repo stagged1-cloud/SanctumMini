@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0] - 2026-10-06 (Beta, WoW: Forever 1.60.1)
+
+- Goals panel: new Training section. Lists spells you can learn now ("Trainer: Renew - level 8") straight away, and once you have opened your class trainer it also tracks every new rank and its level, with the total cost in the heading
+- Class quest spells (Druid Bear Form and Aquatic Form, Paladin Redemption) are flagged as quests, not trainer visits; race-only Priest spells are never asked for
+- Buff watch: pick self buffs from a dropdown (Options > Buff watch, or /sanc buffs). Icons sit on your own bar, show time left while up and flash red when a buff is missing or falls off. Offers your class buffs (Paladin auras, blessings and seals as "any"; Shaman main-hand imbue), Well Fed, and anything currently on you. Optional: hide icons while the buff is up
+- Buff watch keeps the last known state when Forever blocks reading auras in combat, so icons never flash falsely
+- Test suite: 243 tests
+
 ## [0.5.1] - 2026-10-06 (Beta, WoW: Forever 1.60.1)
 
 - Goals panel widens to fit its text (up to 420 px) and wraps anything longer, so lines no longer run off the edge

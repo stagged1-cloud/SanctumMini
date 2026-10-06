@@ -278,6 +278,51 @@ D.goals = {
 }
 
 ---------------------------------------------------------------------------
+-- Buff watch: self buffs offered in the dropdown. An entry appears once you
+-- know any spell in `needs` (default: `accept`). `accept` = any of these auras
+-- counts as up. `weapon` = temporary main-hand weapon enchant (Shaman imbues).
+-- Anything currently on you (Arcane Intellect from a mage, etc.) is offered too.
+---------------------------------------------------------------------------
+D.buffWatch = {
+    PRIEST = {
+        { key = "Power Word: Fortitude", accept = { "Power Word: Fortitude", "Prayer of Fortitude" } },
+        { key = "Inner Fire", accept = { "Inner Fire" } },
+        { key = "Divine Spirit", accept = { "Divine Spirit", "Prayer of Spirit" } },
+        { key = "Shadow Protection", accept = { "Shadow Protection", "Prayer of Shadow Protection" } },
+        { key = "Fear Ward", accept = { "Fear Ward" } },
+        { key = "Shadowguard", accept = { "Shadowguard" } },
+        { key = "Touch of Weakness", accept = { "Touch of Weakness" } },
+    },
+    DRUID = {
+        { key = "Mark of the Wild", accept = { "Mark of the Wild", "Gift of the Wild" } },
+        { key = "Thorns", accept = { "Thorns" } },
+        { key = "Omen of Clarity", accept = { "Omen of Clarity" } },
+    },
+    PALADIN = {
+        { key = "Aura", label = "Aura (any)", icon = "Interface\\Icons\\Spell_Holy_DevotionAura",
+          accept = { "Devotion Aura", "Retribution Aura", "Concentration Aura", "Shadow Resistance Aura",
+                     "Frost Resistance Aura", "Fire Resistance Aura", "Sanctity Aura" } },
+        { key = "Blessing", label = "Blessing (any)", icon = "Interface\\Icons\\Spell_Holy_FistOfJustice",
+          accept = { "Blessing of Might", "Blessing of Wisdom", "Blessing of Kings", "Blessing of Salvation",
+                     "Blessing of Light", "Blessing of Sanctuary", "Greater Blessing of Might",
+                     "Greater Blessing of Wisdom", "Greater Blessing of Kings", "Greater Blessing of Salvation",
+                     "Greater Blessing of Light", "Greater Blessing of Sanctuary" } },
+        { key = "Seal", label = "Seal (any)", icon = "Interface\\Icons\\Ability_ThunderBolt",
+          accept = { "Seal of Righteousness", "Seal of the Crusader", "Seal of Justice", "Seal of Light",
+                     "Seal of Wisdom", "Seal of Command", "Seal of Fury" } },
+        { key = "Righteous Fury", accept = { "Righteous Fury" } },
+    },
+    SHAMAN = {
+        { key = "Lightning Shield", accept = { "Lightning Shield" } },
+        { key = "Water Shield", accept = { "Water Shield" } },
+        { key = "Earth Shield", accept = { "Earth Shield" } },
+        { key = "Weapon imbue", label = "Weapon imbue (main hand)", weapon = true,
+          icon = "Interface\\Icons\\Spell_Nature_RockBiter",
+          needs = { "Rockbiter Weapon", "Flametongue Weapon", "Frostbrand Weapon", "Windfury Weapon" } },
+    },
+}
+
+---------------------------------------------------------------------------
 -- Default GSE-style sequence. One step fires per key press; KeyPress lines
 -- run on every press, PostMacro lines after the step.
 ---------------------------------------------------------------------------

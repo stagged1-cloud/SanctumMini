@@ -2,7 +2,7 @@
 -- Namespace, saved variables, API compat shims, event bus, combat queue, slash commands.
 
 local ADDON, ns = ...
-ns.version = "0.5.1"
+ns.version = "0.6.0"
 ns.Data = ns.Data or {}
 ns.Logic = ns.Logic or {}
 
@@ -248,6 +248,8 @@ local function initDB()
     if type(SanctumCharDB.sequence) ~= "table" then
         SanctumCharDB.sequence = copy(ns.Data.defaultSequences[class] or ns.Data.defaultSequences.DEFAULT)
     end
+    if type(SanctumCharDB.buffWatch) ~= "table" then SanctumCharDB.buffWatch = {} end
+    if type(SanctumCharDB.buffWatch.list) ~= "table" then SanctumCharDB.buffWatch.list = {} end
     ns.db, ns.cdb = SanctumDB, SanctumCharDB
 end
 
@@ -317,6 +319,7 @@ ns.On("PLAYER_LOGIN", function()
     safe("Frames", ns.Frames and ns.Frames.Init)
     safe("Sequence", ns.Sequence and ns.Sequence.Init)
     safe("Goals", ns.Goals and ns.Goals.Init)
+    safe("BuffWatch", ns.BuffWatch and ns.BuffWatch.Init)
     safe("Minimap", ns.Minimap and ns.Minimap.Init)
     safe("Talents", ns.Talents and ns.Talents.Init)
     safe("Settings", ns.Options and ns.Options.RegisterSettings)
@@ -391,6 +394,8 @@ SlashCmdList.SANCTUM = function(msg)
         ns.Frames.ToggleTest()
     elseif cmd == "goals" then
         ns.Goals.Toggle()
+    elseif cmd == "buffs" or cmd == "buff" then
+        ns.BuffWatch.ToggleMenu()
     elseif cmd == "bind" then
         ns.Sequence.Bind(rest)
     elseif cmd == "unbind" then
@@ -417,7 +422,7 @@ SlashCmdList.SANCTUM = function(msg)
         ns.Print("commands:")
         ns.Print("  /sanc log - sequence cast log")
         ns.Print("  /sanc talents - talent planner   /sanc minimap - show/hide the minimap icon")
-        ns.Print("  /sanc - options   /sanc lock|unlock   /sanc test   /sanc goals")
+        ns.Print("  /sanc - options   /sanc lock|unlock   /sanc test   /sanc goals   /sanc buffs - buff watch")
         ns.Print("  /sanc bind <KEY> - bind the sequence button (e.g. /sanc bind F)   /sanc unbind")
         ns.Print("  /sanc seq - sequence status   /sanc defaults - reset click bindings   /sanc reset - positions")
         ns.Print("  /sanc probe - API diagnostic for the Forever client")

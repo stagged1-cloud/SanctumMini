@@ -60,7 +60,64 @@ function G.Snapshot()
     C.ForEachAura("player", "HELPFUL", function(a)
         if not issecret(a.name) then snap.buffs[a.name] = true end
     end)
+    local cd = ns.TalentData and ns.TalentData[ns.class]
+    if cd and cd.trainer then
+        snap.training = { levels = cd.trainer, skip = cd.trainerSkip, quest = cd.trainerQuest,
+                          cache = ns.cdb.trainer }
+    end
     return snap
+end
+
+---------------------------------------------------------------------------
+-- Trainer scan: on opening your class trainer, remember every service (including
+-- the ones you're too low for, with their level) so the panel can say when a new
+-- rank is ready without you having to go and look.
+---------------------------------------------------------------------------
+local scanning, filterChangedAt = false, -10
+-- "used" (already trained) is not needed: anything missing from the cache is not ready.
+local FILTERS = { "available", "unavailable" }
+
+function G.ReadTrainer()
+    if not GetNumTrainerServices or not GetTrainerServiceInfo then return nil end
+    if IsTradeskillTrainer and IsTradeskillTrainer() then return nil end
+    -- Only touch a filter the player has switched off, and put it back after.
+    local changed = {}
+    if GetTrainerServiceTypeFilter and SetTrainerServiceTypeFilter then
+        for _, t in ipairs(FILTERS) do
+            local on = GetTrainerServiceTypeFilter(t)
+            if not on or on == 0 then changed[#changed + 1] = t; SetTrainerServiceTypeFilter(t, 1) end
+        end
+    end
+    local services = {}
+    for i = 1, GetNumTrainerServices() or 0 do
+        local name, rank, state = GetTrainerServiceInfo(i)
+        if name then
+            services[#services + 1] = {
+                name = name, rank = rank, state = state,
+                req = GetTrainerServiceLevelReq and GetTrainerServiceLevelReq(i) or 0,
+                cost = GetTrainerServiceCost and GetTrainerServiceCost(i) or 0,
+            }
+        end
+    end
+    for _, t in ipairs(changed) do SetTrainerServiceTypeFilter(t, 0) end
+    if #changed > 0 then filterChangedAt = GetTime() end
+    return services
+end
+
+function G.ScanTrainer(event)
+    -- Our own filter changes fire TRAINER_UPDATE: ignore those, never a real purchase.
+    if scanning or (event == "TRAINER_UPDATE" and GetTime() - filterChangedAt < 1) then return end
+    scanning = true
+    local ok, services = pcall(G.ReadTrainer)
+    scanning = false
+    if not ok or not services then return end
+    local cd = ns.TalentData and ns.TalentData[ns.class]
+    local cache = L.TrainerCacheFrom(services, cd and cd.trainer, ns.known)
+    if cache then
+        cache.at = UnitLevel("player")
+        ns.cdb.trainer = cache
+        G.Queue()
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -188,6 +245,8 @@ function G.Init()
         ns.On(e, G.Queue)
     end
     ns.On("UNIT_AURA", function(_, unit) if unit == "player" then G.Queue() end end)
+    ns.On("TRAINER_SHOW", G.ScanTrainer)
+    ns.On("TRAINER_UPDATE", G.ScanTrainer)
     G.ready = true
     G.Refresh()
 end

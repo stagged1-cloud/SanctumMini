@@ -136,6 +136,11 @@ TD.PRIEST.trainer = {
     ["Divine Grace"] = 10, ["Desperate Prayer"] = 10, ["Starshards"] = 10, ["Hex of Weakness"] = 10,
     ["Touch of Weakness"] = 10, ["Feedback"] = 20, ["Elune's Grace"] = 20, ["Shadowguard"] = 20,
 }
+-- Race-only, so the goals panel never asks every Priest to train them.
+TD.PRIEST.trainerSkip = {
+    ["Divine Grace"] = true, ["Desperate Prayer"] = true, ["Starshards"] = true, ["Hex of Weakness"] = true,
+    ["Touch of Weakness"] = true, ["Feedback"] = true, ["Elune's Grace"] = true, ["Shadowguard"] = true,
+}
 
 -- Sequence templates per play style. Steps using a talent your build never
 -- takes are left out when the template is loaded.
@@ -289,6 +294,8 @@ TD.DRUID.trainer = {
     ["Dire Bear Form"] = 40, ["Hurricane"] = 40, ["Innervate"] = 40, ["Feline Grace"] = 40,
     ["Lacerate"] = 42, ["Barkskin"] = 44, ["Gift of the Wild"] = 50,
 }
+-- Learned from class quests, not bought from the trainer.
+TD.DRUID.trainerQuest = { ["Bear Form"] = true, ["Aquatic Form"] = true }
 
 TD.DRUID.sequences = {
     feral = {
@@ -432,6 +439,8 @@ TD.PALADIN.trainer = {
     ["Greater Blessing of Kings"] = 60, ["Greater Blessing of Light"] = 60,
     ["Greater Blessing of Salvation"] = 60,
 }
+-- Learned from a class quest, not bought from the trainer.
+TD.PALADIN.trainerQuest = { ["Redemption"] = true }
 
 -- Seals are cast once per target ("dot" step): in Forever they last 30 sec
 -- and Judgement no longer consumes them.
