@@ -714,6 +714,144 @@ T("FormatRemaining", function()
     eq(L.FormatRemaining(90), "2m"); eq(L.FormatRemaining(1799), "30m"); eq(L.FormatRemaining(3600), "1h")
 end)
 
+print("== Logic: alert panel (0.7.0)")
+-- AP1: expiry fallback. A stale aura list (combat read blocked) still lists the buff,
+-- but its expiry time has passed, so it counts as gone. Before expiry it is still up.
+T("BuffWatchState: expired aura in a stale read counts as gone", function()
+    local tracked = { { key = "Inner Fire", accept = { "Inner Fire" } } }
+    local stale = { ["Inner Fire"] = { expirationTime = 1010 } }
+    eq(L.BuffWatchState(tracked, stale, 1011)[1].up, false, "past expiry")
+    eq(L.BuffWatchState(tracked, stale, 1010)[1].up, false, "exactly at expiry")
+    local st = L.BuffWatchState(tracked, stale, 1005)[1]
+    eq(st.up, true); eq(st.remaining, 5)
+    -- no expiry (0 or missing) never times out
+    eq(L.BuffWatchState(tracked, { ["Inner Fire"] = { expirationTime = 0 } }, 99999)[1].up, true)
+end)
+-- AP2: debuff entries read the harmful list only; a buff of the same name does not count
+T("BuffWatchState: debuffs read the harmful list", function()
+    local tracked = { { key = "Weakened Soul", harmful = true } }
+    eq(L.BuffWatchState(tracked, { ["Weakened Soul"] = {} }, 0, nil, {})[1].up, false, "helpful list ignored")
+    local st = L.BuffWatchState(tracked, {}, 1000, nil, { ["Weakened Soul"] = { icon = 5, expirationTime = 1015 } })[1]
+    eq(st.up, true); eq(st.remaining, 15); eq(st.harmful, true); eq(st.icon, 5)
+    eq(L.BuffWatchState(tracked, {}, 0, nil, nil)[1].up, false, "nil harmful list is safe")
+end)
+-- AP3: modes. Buffs default to the bar; debuffs always use the panel (default "present").
+T("AlertMode / IsPanelEntry / DefaultAlertMode", function()
+    eq(L.AlertMode({ key = "X" }), nil); eq(L.IsPanelEntry({ key = "X" }), false)
+    eq(L.AlertMode({ key = "X", alert = "missing" }), "missing")
+    eq(L.AlertMode({ key = "X", alert = "present" }), "present")
+    eq(L.AlertMode({ key = "X", alert = "rubbish" }), nil, "unknown mode falls back to bar")
+    eq(L.AlertMode({ key = "D", harmful = true }), "present", "debuff with no mode")
+    eq(L.AlertMode({ key = "D", harmful = true, alert = "missing" }), "missing")
+    eq(L.AlertMode(nil), nil); eq(L.IsPanelEntry(nil), false)
+    eq(L.DefaultAlertMode(true), "present"); eq(L.DefaultAlertMode(false), nil)
+end)
+-- AP4: mode button cycles. Buffs: bar -> gone -> on -> bar. Debuffs never go to the bar.
+T("NextAlertMode and labels", function()
+    eq(L.NextAlertMode(nil, false), "missing")
+    eq(L.NextAlertMode("missing", false), "present")
+    eq(L.NextAlertMode("present", false), nil)
+    eq(L.NextAlertMode("present", true), "missing")
+    eq(L.NextAlertMode("missing", true), "present")
+    eq(L.NextAlertMode(nil, true), "present")
+    eq(L.AlertModeLabel(nil), "Bar"); eq(L.AlertModeLabel("missing"), "Panel: gone"); eq(L.AlertModeLabel("present"), "Panel: on")
+end)
+-- AP5: "Panel: gone": alert when missing, amber warning inside the window, hidden otherwise
+T("AlertState: missing mode, alert and warning", function()
+    local tracked = { { key = "A", alert = "missing" }, { key = "B", alert = "missing" },
+                      { key = "C", alert = "missing" }, { key = "D", alert = "missing" }, { key = "Bar" } }
+    local states = { { label = "A", up = false }, { label = "B", up = true, remaining = 20 },
+                     { label = "C", up = true, remaining = 300 }, { label = "D", up = true },
+                     { label = "Bar", up = false } }
+    local out = L.AlertState(tracked, states, 30)
+    eq(#out, 2, "only A (gone) and B (inside warning window)")
+    eq(out[1].key, "A"); eq(out[1].level, "alert"); eq(out[1].id, "+A")
+    eq(out[2].key, "B"); eq(out[2].level, "warn"); eq(out[2].remaining, 20)
+    eq(#L.AlertState(tracked, states, 0), 1, "warnings off")
+    eq(#L.AlertState(tracked, states, nil), 1, "warnings nil = off")
+    eq(L.AlertState(tracked, states, 30)[1].key, "A", "bar entry never listed even though missing")
+end)
+-- AP6: "Panel: on": alert while present (debuffs, procs), nothing when gone, never a warning
+T("AlertState: present mode", function()
+    local tracked = { { key = "Weakened Soul", harmful = true }, { key = "Clearcasting", alert = "present" } }
+    local out = L.AlertState(tracked, { { label = "WS", up = true, remaining = 5 }, { label = "CC", up = false } }, 30)
+    eq(#out, 1); eq(out[1].level, "alert", "present + short time is still an alert, not a warning")
+    eq(out[1].id, "-Weakened Soul"); eq(out[1].harmful, true)
+    out = L.AlertState(tracked, { { up = false }, { up = true } }, 30)
+    eq(#out, 1); eq(out[1].key, "Clearcasting")
+end)
+-- AP7: sound trigger. Quiet on the first check (login), counts only new red alerts.
+T("NewAlerts: first check quiet, new alerts counted once", function()
+    local a = { { id = "+A", level = "alert" }, { id = "+B", level = "warn" } }
+    local n, set = L.NewAlerts(nil, a)
+    eq(n, 0, "first check after login is quiet"); eq(set["+A"], true); eq(set["+B"], nil, "warnings never sound")
+    n, set = L.NewAlerts(set, a); eq(n, 0, "still alerting, no repeat")
+    n, set = L.NewAlerts(set, { { id = "+A", level = "alert" }, { id = "-C", level = "alert" } }); eq(n, 1)
+    n, set = L.NewAlerts(set, {}); eq(n, 0)
+    n = L.NewAlerts(set, { { id = "+A", level = "alert" } }); eq(n, 1, "comes back after clearing")
+    eq((L.NewAlerts(nil, nil)), 0, "nil inputs")
+end)
+-- AP8b: bar icon size clamp
+T("ClampBuffIconSize keeps bar icons between 16 and 44 px", function()
+    eq(L.ClampBuffIconSize(nil), 22, "unset -> 0.6.0 size"); eq(L.ClampBuffIconSize(30), 30)
+    eq(L.ClampBuffIconSize(4), 16); eq(L.ClampBuffIconSize(500), 44); eq(L.ClampBuffIconSize("x"), 22)
+    for _, v in ipairs(L.BUFF_ICON_SIZES) do eq(L.ClampBuffIconSize(v), v, "every choice is in range") end
+end)
+-- AP8: warning time is 10 to 30 s; older saved values (off, 60) and junk are clamped
+T("ClampWarn keeps the warning between 10 and 30 seconds", function()
+    eq(table.concat(L.WARN_CHOICES, ","), "10,15,20,25,30")
+    eq(L.ClampWarn(15), 15); eq(L.ClampWarn(10), 10); eq(L.ClampWarn(30), 30)
+    eq(L.ClampWarn(0), 10, "off from a test build"); eq(L.ClampWarn(60), 30, "60 from a test build")
+    eq(L.ClampWarn(nil), 30, "unset -> default"); eq(L.ClampWarn("x"), 30, "junk -> default")
+    eq(L.ClampWarn(17.6), 18)
+end)
+-- AP9: the sound list: eight shipped sounds, the game's raid warning, off; no own-file option
+T("Alert sound list and saved-choice fallback", function()
+    local keys = {}
+    for _, x in ipairs(D.alertSounds) do keys[#keys + 1] = x.key; assert(not x.custom, "no own-file entry") end
+    eq(table.concat(keys, ","), "trombone,duck,boing,kazoo,cuckoo,slide,honk,awooga,raid,off")
+    eq(L.ValidSound(D.alertSounds, "awooga"), "awooga")
+    eq(L.ValidSound(D.alertSounds, "custom"), "trombone", "test build's own-file choice falls back")
+    eq(L.ValidSound(D.alertSounds, nil), "trombone"); eq(L.ValidSound(nil, "x"), nil)
+end)
+-- AP10: what to play for each choice
+T("AlertSound resolves file, game sound, off", function()
+    local list = D.alertSounds
+    local k, v = L.AlertSound(list, "trombone"); eq(k, "file"); eq(v, "Interface\\AddOns\\SanctumMini\\Sounds\\SadTrombone.ogg")
+    k, v = L.AlertSound(list, "honk"); eq(k, "file"); eq(v, "Interface\\AddOns\\SanctumMini\\Sounds\\HonkHonk.ogg")
+    k, v = L.AlertSound(list, "raid"); eq(k, "kit"); eq(v, 8959)
+    eq(L.AlertSound(list, "custom"), nil, "removed option plays nothing")
+    eq(L.AlertSound(list, "off"), nil); eq(L.AlertSound(nil, "trombone"), nil)
+end)
+-- AP11: every shipped sound file exists on disk
+T("Shipped alert sounds exist", function()
+    for _, s in ipairs(D.alertSounds) do
+        if s.file then
+            local rel = s.file:gsub("^Interface\\AddOns\\SanctumMini\\", ""):gsub("\\", "/")
+            local h = io.open(rel, "rb"); assert(h, "missing " .. rel); h:close()
+        end
+    end
+end)
+-- AP13: debuff rows: class list, then ALL, kept tracked, then anything harmful on you now
+T("DebuffWatchCandidates", function()
+    local tracked = { { key = "Weakened Soul", harmful = true }, { key = "Curse of Agony", harmful = true },
+                      { key = "Inner Fire" } }
+    local rows = L.DebuffWatchCandidates(D.debuffWatch.PRIEST, D.debuffWatch.ALL, { ["Poison"] = 77, ["Weakened Soul"] = 1 }, tracked)
+    local labels = {}
+    for _, r in ipairs(rows) do labels[#labels + 1] = r.label; eq(r.harmful, true) end
+    eq(table.concat(labels, ","), "Weakened Soul,Resurrection Sickness,Recently Bandaged,Curse of Agony,Poison")
+    eq(rows[1].checked, true); eq(rows[2].checked, false); eq(rows[4].checked, true); eq(rows[5].icon, 77)
+    eq(#L.DebuffWatchCandidates(nil, nil, nil, nil), 0, "nil inputs")
+    -- the buff list never re-adds a tracked debuff as a buff
+    local brows = L.BuffWatchCandidates(D.buffWatch.PRIEST, {}, {}, tracked)
+    for _, r in ipairs(brows) do assert(r.key ~= "Curse of Agony", "debuff leaked into buff rows") end
+end)
+-- AP14: invalid inputs never error
+T("AlertState: nil and short inputs", function()
+    eq(#L.AlertState(nil, nil, 30), 0)
+    eq(#L.AlertState({ { key = "A", alert = "missing" } }, {}, 30), 0, "no state for entry")
+end)
+
 print("== Logic: talents for every healing class")
 local HEALERS = { "PRIEST", "DRUID", "PALADIN", "SHAMAN" }
 for _, cls in ipairs(HEALERS) do
@@ -1429,6 +1567,217 @@ T("Options has a Buff watch button that opens the dropdown", function()
     assert(sns.BuffWatch.menu:IsShown())
     sns.Options.frame:GetScript("OnHide")()
     eq(sns.BuffWatch.menu:IsShown(), false, "closing Options closes the dropdown")
+end)
+
+print("== Smoke: alert panel (0.7.0)")
+local function findRow(m, key, harmful)
+    for _, r in ipairs(m.rows) do
+        if r.row and r.row.key == key and (r.row.harmful and true or false) == (harmful and true or false) then return r end
+    end
+end
+env._sounds = {}
+env.PlaySoundFile = function(path) env._sounds[#env._sounds + 1] = path; return true end
+env.PlaySound = function(kit) env._sounds[#env._sounds + 1] = kit; return true end
+
+-- SM1: an upgraded character gets a locked, hidden panel: nothing appears until opted in
+T("Alert panel: defaults after upgrade, locked and hidden", function()
+    local p = env.SanctumCharDB.buffWatch.panel
+    eq(p.locked, true); eq(p.size, 44); eq(p.sound, "trombone"); eq(p.warnSecs, 30); eq(p.soundFile, nil, "no own-file setting")
+    assert(sns.BuffWatch.panel, "panel built")
+    eq(sns.BuffWatch.panel:IsShown(), false)
+end)
+
+-- SM2: a buff moved to the panel: first use unlocks for placing, then flashes when it falls off
+T("Alert panel: buff on 'Panel: gone' flashes red when it falls off, one sound", function()
+    local BWm = sns.BuffWatch
+    local p = env.SanctumCharDB.buffWatch.panel
+    local auras = { { name = "Inner Fire", icon = 135926, expirationTime = 1600.25 } }
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, filter) if filter == "HELPFUL" then return auras[i] end end }
+    env.SlashCmdList.SANCTUM("buffs")
+    local m = BWm.menu
+    local row = findRow(m, "Inner Fire")
+    row:SetChecked(true); row:GetScript("OnClick")(row)
+    row = findRow(m, "Inner Fire")
+    eq(row.mode:IsShown(), true, "mode button shows once ticked"); eq(row.mode.text:GetText(), "Bar")
+    eq(BWm.icons[1]:IsShown(), true, "starts on the bar")
+    row.mode:GetScript("OnClick")(row.mode)
+    eq(env.SanctumCharDB.buffWatch.list[1].alert, "missing")
+    eq(findRow(m, "Inner Fire").mode.text:GetText(), "Panel: gone")
+    eq(BWm.icons[1]:IsShown(), false, "left the bar")
+    eq(p.locked, false, "first use unlocks the panel for placing")
+    eq(BWm.panel:IsShown(), true, "unlocked preview shows")
+    eq(BWm.panel.icons[1].alert.key, "Inner Fire")
+    eq(BWm.panel.icons[1].alert.level, "idle", "buff is up: dimmed in the preview, not flashing")
+    eq(BWm.panel.flashing, false)
+    -- "Hide icons while the buff is up" applies to the preview too
+    m.hideCheck:SetChecked(true); m.hideCheck:GetScript("OnClick")(m.hideCheck)
+    eq(env.SanctumCharDB.buffWatch.hideWhileUp, true)
+    eq(BWm.panel.icons[1].alert.label, "Alerts show here", "up buff hidden, placeholder kept for dragging")
+    m.hideCheck:SetChecked(false); m.hideCheck:GetScript("OnClick")(m.hideCheck)
+    eq(BWm.panel.icons[1].alert.key, "Inner Fire", "unticked: back")
+    -- lock it from the dropdown
+    m.lockCheck:SetChecked(true); m.lockCheck:GetScript("OnClick")(m.lockCheck)
+    eq(p.locked, true); eq(p.placed, true)
+    eq(BWm.panel:IsShown(), false, "locked and the buff is up: hidden")
+    -- it falls off
+    env._sounds = {}
+    auras = {}
+    fire("UNIT_AURA", "player")
+    eq(BWm.panel:IsShown(), true, "pops up")
+    local icon = BWm.panel.icons[1]
+    eq(icon.alert.level, "alert"); eq(icon.glow:IsShown(), true); eq(BWm.panel.flashing, true)
+    eq(#env._sounds, 1); eq(env._sounds[1], "Interface\\AddOns\\SanctumMini\\Sounds\\SadTrombone.ogg")
+    BWm.PanelTick(0.1)   -- pulse runs without error
+    fire("UNIT_AURA", "player")
+    eq(#env._sounds, 1, "no repeat while still missing")
+    -- recast with 20s left: amber warning inside the 30s window, no flash, no sound
+    auras = { { name = "Inner Fire", icon = 135926, expirationTime = 1020.25 } }
+    fire("UNIT_AURA", "player")
+    eq(BWm.panel:IsShown(), true); eq(icon.alert.level, "warn"); eq(icon.time:GetText(), "20s")
+    eq(icon.glow:IsShown(), false); eq(BWm.panel.flashing, false); eq(#env._sounds, 1)
+    -- full duration: hidden again
+    auras = { { name = "Inner Fire", icon = 135926, expirationTime = 1600.25 } }
+    fire("UNIT_AURA", "player")
+    eq(BWm.panel:IsShown(), false)
+    -- dead: hidden even if missing
+    auras = {}
+    env.UnitIsDeadOrGhost = function() return true end
+    BWm.Update(); eq(BWm.panel:IsShown(), false, "hidden while dead")
+    env.UnitIsDeadOrGhost = function() return false end
+    BWm.Update(); eq(BWm.panel:IsShown(), true)
+    m:Hide()
+end)
+
+-- SM3: expiry fallback on the bar: a stale read with a timed-out buff shows missing
+T("Expiry fallback: blocked read after the buff timed out shows it missing", function()
+    local BWm = sns.BuffWatch
+    local list = env.SanctumCharDB.buffWatch.list
+    list[1].alert = nil                       -- back to the bar
+    local auras = { { name = "Inner Fire", icon = 135926, expirationTime = 1010 } }
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, filter) if filter == "HELPFUL" then return auras[i] end end }
+    BWm.Update()
+    eq(BWm.icons[1].state.up, true)
+    env.C_UnitAuras = { GetAuraDataByIndex = function() error("Auras cannot be accessed when secret") end }
+    local oldTime = env.GetTime
+    env.GetTime = function() return 1011 end
+    BWm.Update()
+    eq(BWm.icons[1].state.up, false, "timed out while reads were blocked")
+    eq(BWm.flashing, true)
+    env.GetTime = oldTime
+end)
+
+-- SM4: debuffs on you: offered, default 'Panel: on', flash while present
+T("Debuff watch: Weakened Soul offered, flashes while on you", function()
+    local BWm = sns.BuffWatch
+    local harm = {}
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, filter) if filter == "HARMFUL" then return harm[i] end end }
+    env.SanctumCharDB.buffWatch.list = {}
+    BWm.Update()
+    env.SlashCmdList.SANCTUM("buffs")
+    local m = BWm.menu
+    local row = findRow(m, "Weakened Soul", true)
+    assert(row, "offered to a priest")
+    eq(row.text:GetText(), "|cffff8080Weakened Soul|r", "debuffs shown in red")
+    row:SetChecked(true); row:GetScript("OnClick")(row)
+    local e = env.SanctumCharDB.buffWatch.list[1]
+    eq(e.harmful, true); eq(e.alert, "present")
+    eq(findRow(m, "Weakened Soul", true).mode.text:GetText(), "Panel: on")
+    eq(BWm.holder:IsShown(), false, "debuffs never on the bar")
+    eq(BWm.panel:IsShown(), false, "not on you: hidden")
+    env._sounds = {}
+    BWm.lastSound = nil   -- the mock clock never moves; clear the 2 s sound throttle
+    harm = { { name = "Weakened Soul", icon = 136193, expirationTime = 1015.25 } }
+    fire("UNIT_AURA", "player")
+    eq(BWm.panel:IsShown(), true); eq(BWm.panel.icons[1].alert.level, "alert"); eq(#env._sounds, 1)
+    -- flip to 'Panel: gone' (vice versa)
+    row = findRow(m, "Weakened Soul", true)
+    row.mode:GetScript("OnClick")(row.mode)
+    eq(e.alert, "missing")
+    eq(BWm.panel.icons[1].alert.level, "warn", "on you with 15s left: amber, about to drop")
+    harm = { { name = "Weakened Soul", icon = 136193, expirationTime = 1100.25 } }
+    fire("UNIT_AURA", "player")
+    eq(BWm.panel:IsShown(), false, "on you with plenty left: hidden")
+    harm = {}
+    fire("UNIT_AURA", "player")
+    eq(BWm.panel:IsShown(), true)
+    row = findRow(m, "Weakened Soul", true)
+    row:SetChecked(false); row:GetScript("OnClick")(row)
+    eq(#env.SanctumCharDB.buffWatch.list, 0); eq(BWm.panel:IsShown(), false)
+    m:Hide()
+end)
+
+-- SM5: sound, warning and bar size dropdowns
+T("Sound, warning and bar size dropdowns", function()
+    local BWm = sns.BuffWatch
+    local p = env.SanctumCharDB.buffWatch.panel
+    env.SlashCmdList.SANCTUM("buffs")
+    local m = BWm.menu
+    eq(m.soundButton.text:GetText(), "Sound: Sad Trombone"); eq(m.warnButton.text:GetText(), "Warn: 30s")
+    -- sound dropdown: every sound listed by name, picking one plays it
+    eq(m.soundList:IsShown(), false)
+    m.soundButton:GetScript("OnClick")(m.soundButton); eq(m.soundList:IsShown(), true)
+    eq(#m.soundList.items, 10); eq(m.soundList.items[4].text:GetText(), "Kazoo Fanfare")
+    eq(m.soundList.items[8].text:GetText(), "Awooga"); eq(m.soundList.items[10].text:GetText(), "Off")
+    env._sounds = {}
+    local si = m.soundList.items[7]
+    si:GetScript("OnClick")(si)
+    eq(p.sound, "honk"); eq(m.soundButton.text:GetText(), "Sound: Honk Honk"); eq(m.soundList:IsShown(), false)
+    eq(env._sounds[1], "Interface\\AddOns\\SanctumMini\\Sounds\\HonkHonk.ogg", "previewed on pick")
+    eq(m.fileBox, nil, "no own-file box")
+    -- warning dropdown: 10 to 30 s
+    eq(m.warnList:IsShown(), false)
+    m.warnButton:GetScript("OnClick")(m.warnButton); eq(m.warnList:IsShown(), true, "dropdown opens")
+    eq(#m.warnList.items, 5); eq(m.warnList.items[1].text:GetText(), "10 seconds")
+    eq(m.warnList.items[5].text:GetText(), "30 seconds")
+    local it = m.warnList.items[2]
+    it:GetScript("OnClick")(it)
+    eq(p.warnSecs, 15); eq(m.warnList:IsShown(), false, "closes on pick"); eq(m.warnButton.text:GetText(), "Warn: 15s")
+    m.warnButton:GetScript("OnClick")(m.warnButton); m.warnButton:GetScript("OnClick")(m.warnButton)
+    eq(m.warnList:IsShown(), false, "second click closes")
+    p.warnSecs = 30
+    -- game sound, off, and the removed /sanc alert sound command does nothing harmful
+    env._sounds = {}
+    p.sound = "raid"; BWm.PlayAlert(true); eq(env._sounds[1], 8959)
+    env.SlashCmdList.SANCTUM("alert sound readme.txt"); eq(p.sound, "raid", "no own-file command")
+    p.sound = "off"; env._sounds = {}; BWm.PlayAlert(true); eq(#env._sounds, 0)
+    p.sound = "trombone"
+    -- bar icon size dropdown: default 22, pick 30, icons follow
+    eq(BWm.BarSize(), 22, "0.6.0 size by default"); eq(m.barSizeButton.text:GetText(), "Bar: 22 px")
+    m.barSizeButton:GetScript("OnClick")(m.barSizeButton); eq(m.barSizeList:IsShown(), true)
+    eq(#m.barSizeList.items, 7); eq(m.barSizeList.items[1].text:GetText(), "16 px")
+    local bi = m.barSizeList.items[5]; eq(bi.value, 30)
+    bi:GetScript("OnClick")(bi)
+    eq(env.SanctumCharDB.buffWatch.barSize, 30); eq(BWm.BarSize(), 30)
+    eq(m.barSizeList:IsShown(), false); eq(m.barSizeButton.text:GetText(), "Bar: 30 px")
+    env.SanctumCharDB.buffWatch.barSize = 99; eq(BWm.BarSize(), 44, "out of range clamped")
+    env.SanctumCharDB.buffWatch.barSize = nil
+    m:Hide()
+end)
+
+-- SM6: /sanc alert commands and the resize grip limits
+T("/sanc alert lock/unlock/reset and resize grip limits", function()
+    local BWm = sns.BuffWatch
+    local p = env.SanctumCharDB.buffWatch.panel
+    env.SlashCmdList.SANCTUM("alert unlock"); eq(p.locked, false)
+    eq(BWm.panel:IsShown(), true, "unlocked with nothing set shows a placeholder")
+    eq(BWm.panel.icons[1].alert.label, "No alerts set")
+    eq(BWm.panel.grip:IsShown(), true)
+    local cx = 0
+    local oldCursor = env.GetCursorPosition
+    env.GetCursorPosition = function() return cx, 0 end
+    BWm.panel.grip:GetScript("OnMouseDown")(BWm.panel.grip)
+    cx = 30; BWm.PanelTick(0.01); eq(p.size, 74)
+    cx = 500; BWm.PanelTick(0.01); eq(p.size, 96, "max")
+    cx = -500; BWm.PanelTick(0.01); eq(p.size, 24, "min")
+    BWm.panel.grip:GetScript("OnMouseUp")(BWm.panel.grip)
+    cx = 200; BWm.PanelTick(0.01); eq(p.size, 24, "grip released")
+    env.GetCursorPosition = oldCursor
+    env.SlashCmdList.SANCTUM("alert reset"); eq(p.size, 44); eq(p.y, 180)
+    env.SlashCmdList.SANCTUM("alert"); eq(p.locked, true, "bare /sanc alert toggles")
+    eq(BWm.panel:IsShown(), false); eq(BWm.panel.grip:IsShown(), false)
+    env.SlashCmdList.SANCTUM("alert lock"); eq(p.locked, true)
+    env.SlashCmdList.SANCTUM("alert nonsense")   -- prints help, no error
+    env.C_UnitAuras = nil
 end)
 
 print(("\n%d passed, %d failed"):format(pass, fail))

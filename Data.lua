@@ -323,6 +323,39 @@ D.buffWatch = {
 }
 
 ---------------------------------------------------------------------------
+-- Debuff watch (0.7.0): debuffs on you offered in the dropdown. ALL is offered to
+-- every class; anything harmful currently on you is offered too.
+---------------------------------------------------------------------------
+D.debuffWatch = {
+    ALL = {
+        { key = "Resurrection Sickness" },
+        { key = "Recently Bandaged" },
+    },
+    PRIEST = {
+        { key = "Weakened Soul" },
+    },
+    PALADIN = {
+        { key = "Forbearance" },
+    },
+}
+
+---------------------------------------------------------------------------
+-- Alert panel sounds (0.7.0). Picked from the Sound dropdown in the Buff watch menu.
+---------------------------------------------------------------------------
+D.alertSounds = {
+    { key = "trombone", label = "Sad Trombone", file = "Interface\\AddOns\\SanctumMini\\Sounds\\SadTrombone.ogg" },
+    { key = "duck", label = "Panic Duck", file = "Interface\\AddOns\\SanctumMini\\Sounds\\PanicDuck.ogg" },
+    { key = "boing", label = "Boing Bonk", file = "Interface\\AddOns\\SanctumMini\\Sounds\\BoingBonk.ogg" },
+    { key = "kazoo", label = "Kazoo Fanfare", file = "Interface\\AddOns\\SanctumMini\\Sounds\\KazooFanfare.ogg" },
+    { key = "cuckoo", label = "Cuckoo Clock", file = "Interface\\AddOns\\SanctumMini\\Sounds\\CuckooClock.ogg" },
+    { key = "slide", label = "Slide Whistle", file = "Interface\\AddOns\\SanctumMini\\Sounds\\SlideWhistle.ogg" },
+    { key = "honk", label = "Honk Honk", file = "Interface\\AddOns\\SanctumMini\\Sounds\\HonkHonk.ogg" },
+    { key = "awooga", label = "Awooga", file = "Interface\\AddOns\\SanctumMini\\Sounds\\Awooga.ogg" },
+    { key = "raid", label = "Raid warning", kit = 8959 },
+    { key = "off", label = "Off" },
+}
+
+---------------------------------------------------------------------------
 -- Default GSE-style sequence. One step fires per key press; KeyPress lines
 -- run on every press, PostMacro lines after the step.
 ---------------------------------------------------------------------------

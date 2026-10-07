@@ -5,3 +5,5 @@
 *.tga binary
 *.png binary
 *.blp binary
+*.ogg binary
+*.mp3 binary

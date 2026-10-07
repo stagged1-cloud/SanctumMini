@@ -13,6 +13,7 @@ Healer party frames with click-casting, a GSE-style sequence button, a talent pl
 - **Goals checklist** - per-level gear, enchants, consumables, buff food and reagents; anything missing or wrong shows in red. From level 15 (configurable) a missing enchant names the best healer enchant for your level, e.g. "Wrist: no enchant - get Minor Spirit". Gloves are not checked before 60, as there is no healer glove enchant until then.
 - **Training** - the goals panel lists spells and ranks you can learn now. Open your class trainer once per character so new ranks are tracked too.
 - **Buff watch** - pick self buffs to track (Options > Buff watch or `/sanc buffs`); icons sit on your own bar and flash when a buff is missing or falls off.
+- **Alert panel** - any tracked buff, or a debuff on you, can move from the bar to a big alert panel you can drag, resize from the corner and lock. Per entry: flash red when it is gone (with an amber warning before it runs out) or while it is on you. Eight alert sounds to pick from (Sad Trombone, Panic Duck, Boing Bonk, Kazoo Fanfare, Cuckoo Clock, Slide Whistle, Honk Honk, Awooga), the game's raid warning, or off.
 - **Minimap button** - left-click options, right-click lock/unlock, shift-click goals, drag to move.
 - **Forever-safe** - prefers `C_*` APIs, falls back to legacy globals, and degrades quietly on secret or blocked values. `/sanc probe` reports what the client exposes.
 
@@ -25,6 +26,7 @@ Healer party frames with click-casting, a GSE-style sequence button, a talent pl
 | `/sanc test` | Test mode (fake party) |
 | `/sanc goals` | Goals checklist |
 | `/sanc buffs` | Buff watch dropdown |
+| `/sanc alert` | Lock or unlock the alert panel (`reset`, `test`) |
 | `/sanc talents` | Talent planner |
 | `/sanc bind <KEY>` / `unbind` | Bind the sequence button |
 | `/sanc seq` | Sequence status |

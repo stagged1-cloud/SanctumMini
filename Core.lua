@@ -250,6 +250,12 @@ local function initDB()
     end
     if type(SanctumCharDB.buffWatch) ~= "table" then SanctumCharDB.buffWatch = {} end
     if type(SanctumCharDB.buffWatch.list) ~= "table" then SanctumCharDB.buffWatch.list = {} end
+    -- 0.7.0 alert panel. Locked by default so nothing appears until an entry is set to the panel.
+    if type(SanctumCharDB.buffWatch.panel) ~= "table" then SanctumCharDB.buffWatch.panel = {} end
+    applyDefaults(SanctumCharDB.buffWatch.panel, {
+        point = "CENTER", relPoint = "CENTER", x = 0, y = 180, size = 44,
+        locked = true, warnSecs = 30, sound = "trombone",
+    })
     ns.db, ns.cdb = SanctumDB, SanctumCharDB
 end
 
@@ -396,6 +402,8 @@ SlashCmdList.SANCTUM = function(msg)
         ns.Goals.Toggle()
     elseif cmd == "buffs" or cmd == "buff" then
         ns.BuffWatch.ToggleMenu()
+    elseif cmd == "alert" or cmd == "alerts" then
+        ns.BuffWatch.AlertCommand(rest)
     elseif cmd == "bind" then
         ns.Sequence.Bind(rest)
     elseif cmd == "unbind" then
@@ -423,6 +431,7 @@ SlashCmdList.SANCTUM = function(msg)
         ns.Print("  /sanc log - sequence cast log")
         ns.Print("  /sanc talents - talent planner   /sanc minimap - show/hide the minimap icon")
         ns.Print("  /sanc - options   /sanc lock|unlock   /sanc test   /sanc goals   /sanc buffs - buff watch")
+        ns.Print("  /sanc alert - lock/unlock the alert panel   /sanc alert reset|test")
         ns.Print("  /sanc bind <KEY> - bind the sequence button (e.g. /sanc bind F)   /sanc unbind")
         ns.Print("  /sanc seq - sequence status   /sanc defaults - reset click bindings   /sanc reset - positions")
         ns.Print("  /sanc probe - API diagnostic for the Forever client")

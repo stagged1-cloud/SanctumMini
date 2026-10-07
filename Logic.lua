@@ -418,21 +418,27 @@ end
 -- auras   = { [name] = { icon, expirationTime, duration } } (your helpful auras)
 -- weapon  = { mainHand = bool, mainHandMs = number } (temporary weapon enchant)
 -- Returns { { key, label, icon, up, remaining } } in tracked order.
-function L.BuffWatchState(tracked, auras, now, weapon)
+function L.BuffWatchState(tracked, auras, now, weapon, harmful)
     local out = {}
     auras = auras or {}
+    harmful = harmful or {}
     for _, t in ipairs(tracked or {}) do
-        local st = { key = t.key, label = t.label or t.key, icon = t.icon, up = false }
+        local st = { key = t.key, label = t.label or t.key, icon = t.icon, up = false, harmful = t.harmful }
         if t.weapon then
             st.up = weapon and weapon.mainHand and true or false
             if st.up and weapon.mainHandMs then st.remaining = weapon.mainHandMs / 1000 end
         else
+            -- Debuffs (harmful = true) are read from the harmful aura list.
+            local src = t.harmful and harmful or auras
             for _, name in ipairs(t.accept or { t.key }) do
-                local a = auras[name]
+                local a = src[name]
+                local exp = a and tonumber(a.expirationTime)
+                -- Past its expiry time it has fallen off, even when the last read (kept
+                -- because Forever blocked reading auras in combat) still lists it.
+                if a and exp and exp > 0 and now and exp <= now then a = nil end
                 if a then
                     st.up = true
                     st.icon = a.icon or st.icon
-                    local exp = tonumber(a.expirationTime)
                     if exp and exp > 0 and now then st.remaining = math.max(0, exp - now) end
                     break
                 end
@@ -469,7 +475,7 @@ function L.BuffWatchCandidates(classList, known, current, tracked)
     add({ key = "Well Fed", label = "Well Fed", accept = { "Well Fed" } })
     -- Tracked entries that came from "currently on you" stay listed after they fall off.
     for _, t in ipairs(tracked or {}) do
-        if not covered[t.key] then add({ key = t.key, label = t.label or t.key, accept = t.accept or { t.key },
+        if not covered[t.key] and not t.harmful then add({ key = t.key, label = t.label or t.key, accept = t.accept or { t.key },
                                          weapon = t.weapon, icon = t.icon }) end
     end
     local names = {}
@@ -480,6 +486,152 @@ function L.BuffWatchCandidates(classList, known, current, tracked)
         add({ key = name, label = name, accept = { name }, icon = icon ~= true and icon or nil })
     end
     return rows
+end
+
+-- Debuff rows for the Buff watch dropdown (debuffs on you only).
+-- classList = D.debuffWatch[class]; common = D.debuffWatch.ALL; current = { [name] = icon }
+-- harmful auras on you now; tracked = saved list. Same row shape as BuffWatchCandidates,
+-- every row flagged harmful.
+function L.DebuffWatchCandidates(classList, common, current, tracked)
+    local isTracked = {}
+    for _, t in ipairs(tracked or {}) do if t.harmful then isTracked[t.key] = true end end
+    local rows, covered = {}, {}
+    local function add(e)
+        if covered[e.key] then return end
+        e.harmful = true
+        e.checked = isTracked[e.key] or false
+        rows[#rows + 1] = e
+        covered[e.key] = true
+        for _, n in ipairs(e.accept or {}) do covered[n] = true end
+    end
+    for _, list in ipairs({ classList or {}, common or {} }) do
+        for _, e in ipairs(list) do
+            add({ key = e.key, label = e.label or e.key, accept = e.accept or { e.key }, icon = e.icon })
+        end
+    end
+    for _, t in ipairs(tracked or {}) do
+        if t.harmful then add({ key = t.key, label = t.label or t.key, accept = t.accept or { t.key }, icon = t.icon }) end
+    end
+    local names = {}
+    for name in pairs(current or {}) do if not covered[name] then names[#names + 1] = name end end
+    table.sort(names)
+    for _, name in ipairs(names) do
+        local icon = current[name]
+        add({ key = name, label = name, accept = { name }, icon = icon ~= true and icon or nil })
+    end
+    return rows
+end
+
+---------------------------------------------------------------------------
+-- Alert panel (0.7.0)
+-- Each tracked entry has a mode (entry.alert):
+--   nil       = small icon on your bar (buffs only, the 0.6.0 behaviour)
+--   "missing" = alert panel: flashes red when it is NOT on you
+--   "present" = alert panel: flashes red while it IS on you
+-- Debuffs never sit on the bar; they default to "present".
+---------------------------------------------------------------------------
+function L.AlertMode(entry)
+    if not entry then return nil end
+    if entry.alert == "missing" or entry.alert == "present" then return entry.alert end
+    if entry.harmful then return "present" end
+    return nil
+end
+
+function L.IsPanelEntry(entry) return L.AlertMode(entry) ~= nil end
+
+function L.DefaultAlertMode(harmful) return harmful and "present" or nil end
+
+-- Mode button cycle. Buffs: bar -> missing -> present -> bar. Debuffs: present <-> missing.
+function L.NextAlertMode(mode, harmful)
+    if harmful then return mode == "present" and "missing" or "present" end
+    if mode == nil then return "missing" end
+    if mode == "missing" then return "present" end
+    return nil
+end
+
+function L.AlertModeLabel(mode)
+    if mode == "missing" then return "Panel: gone" end
+    if mode == "present" then return "Panel: on" end
+    return "Bar"
+end
+
+-- What the alert panel shows. tracked = saved list; states = BuffWatchState(tracked, ...) in the
+-- same order; warnSecs = amber warning this long before a "missing" buff runs out (0/nil = never).
+-- Returns { { id, key, label, icon, level = "alert"|"warn", remaining, mode, harmful } }.
+function L.AlertState(tracked, states, warnSecs)
+    local out = {}
+    for i, t in ipairs(tracked or {}) do
+        local st = states and states[i]
+        local mode = L.AlertMode(t)
+        if st and mode then
+            local level
+            if mode == "missing" then
+                if not st.up then
+                    level = "alert"
+                elseif warnSecs and warnSecs > 0 and st.remaining and st.remaining <= warnSecs then
+                    level = "warn"
+                end
+            elseif st.up then
+                level = "alert"
+            end
+            if level then
+                out[#out + 1] = { id = (t.harmful and "-" or "+") .. t.key, key = t.key, label = st.label,
+                                  icon = st.icon, level = level, remaining = st.remaining, mode = mode,
+                                  harmful = t.harmful }
+            end
+        end
+    end
+    return out
+end
+
+-- Alerts that have just started (for the sound). prev = set from the last check, or nil on the
+-- first check after login so alerts already showing stay quiet. Returns newCount, newSet.
+function L.NewAlerts(prev, shown)
+    local set, n = {}, 0
+    for _, a in ipairs(shown or {}) do
+        if a.level == "alert" then
+            set[a.id] = true
+            if prev and not prev[a.id] then n = n + 1 end
+        end
+    end
+    return n, set
+end
+
+-- Bar icon sizes offered in the dropdown (pixels); 22 is the 0.6.0 size.
+L.BUFF_ICON_SIZES = { 16, 20, 22, 26, 30, 36, 44 }
+function L.ClampBuffIconSize(px)
+    px = tonumber(px) or 22
+    if px < 16 then return 16 end
+    if px > 44 then return 44 end
+    return math.floor(px + 0.5)
+end
+
+-- Warning times offered in the dropdown (10 to 30 s), and a clamp for saved values.
+L.WARN_CHOICES = { 10, 15, 20, 25, 30 }
+function L.ClampWarn(secs)
+    secs = tonumber(secs) or 30
+    if secs < 10 then return 10 end
+    if secs > 30 then return 30 end
+    return math.floor(secs + 0.5)
+end
+
+-- A saved sound choice that is no longer offered (e.g. a test build's own-file option)
+-- falls back to the first sound.
+function L.ValidSound(list, key)
+    for _, s in ipairs(list or {}) do if s.key == key then return key end end
+    return list and list[1] and list[1].key
+end
+
+-- What to play: returns "file", path | "kit", id | nil (off or unknown).
+function L.AlertSound(list, key)
+    for _, s in ipairs(list or {}) do
+        if s.key == key then
+            if s.file then return "file", s.file end
+            if s.kit then return "kit", s.kit end
+            return nil
+        end
+    end
+    return nil
 end
 
 -- Returns ordered list of sections plus overall status.
