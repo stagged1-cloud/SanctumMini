@@ -797,11 +797,12 @@ T("ClampBuffIconSize keeps bar icons between 16 and 44 px", function()
     eq(L.ClampBuffIconSize(4), 16); eq(L.ClampBuffIconSize(500), 44); eq(L.ClampBuffIconSize("x"), 22)
     for _, v in ipairs(L.BUFF_ICON_SIZES) do eq(L.ClampBuffIconSize(v), v, "every choice is in range") end
 end)
--- AP8: warning time is 10 to 30 s; older saved values (off, 60) and junk are clamped
-T("ClampWarn keeps the warning between 10 and 30 seconds", function()
-    eq(table.concat(L.WARN_CHOICES, ","), "10,15,20,25,30")
+-- AP8: warning time is Off or 10 to 30 s; out-of-range saved values and junk are clamped
+T("ClampWarn: Off, or 10 to 30 seconds", function()
+    eq(table.concat(L.WARN_CHOICES, ","), "0,10,15,20,25,30")
     eq(L.ClampWarn(15), 15); eq(L.ClampWarn(10), 10); eq(L.ClampWarn(30), 30)
-    eq(L.ClampWarn(0), 10, "off from a test build"); eq(L.ClampWarn(60), 30, "60 from a test build")
+    eq(L.ClampWarn(0), 0, "off stays off"); eq(L.ClampWarn(-3), 0)
+    eq(L.ClampWarn(5), 10, "below 10 but not off"); eq(L.ClampWarn(60), 30, "60 from a test build")
     eq(L.ClampWarn(nil), 30, "unset -> default"); eq(L.ClampWarn("x"), 30, "junk -> default")
     eq(L.ClampWarn(17.6), 18)
 end)
@@ -1560,13 +1561,33 @@ T("Buff watch sits above your bar, below it when you're at the bottom", function
     env.SanctumDB.frames.showSelfFirst = true; Fr.Layout()
 end)
 
-T("Options has a Buff watch button that opens the dropdown", function()
+T("Options has a Buff watch button that opens the window", function()
     sns.Options.frame:Show()
     local b = sns.Options.frame.buffWatchButton
     assert(b, "button"); b:GetScript("OnClick")(b)
     assert(sns.BuffWatch.menu:IsShown())
     sns.Options.frame:GetScript("OnHide")()
-    eq(sns.BuffWatch.menu:IsShown(), false, "closing Options closes the dropdown")
+    eq(sns.BuffWatch.menu:IsShown(), true, "a separate window: closing Options leaves it open")
+    sns.BuffWatch.menu:Hide()
+end)
+
+T("Buff watch window moves by its title bar and reopens where it was left", function()
+    local BWm = sns.BuffWatch
+    env.SlashCmdList.SANCTUM("buffs")
+    local m = BWm.menu
+    assert(m.titleBar, "title bar")
+    eq(env.SanctumCharDB.buffWatch.menuPos, nil, "never moved")
+    m.titleBar:GetScript("OnDragStart")(m.titleBar)
+    m.titleBar:GetScript("OnDragStop")(m.titleBar)
+    local pos = env.SanctumCharDB.buffWatch.menuPos
+    eq(pos.point, "CENTER"); eq(pos.x, 0); eq(pos.y, 0)
+    local placed
+    local oldSetPoint = m.SetPoint
+    m.SetPoint = function(_, p, rel, rp, x, y) placed = { p, rel, rp, x, y } end
+    m:Hide(); env.SlashCmdList.SANCTUM("buffs")
+    eq(placed[1], "CENTER"); eq(placed[2], env.UIParent, "anchored to the screen, not the Options button")
+    m.SetPoint = oldSetPoint
+    m:Hide()
 end)
 
 print("== Smoke: alert panel (0.7.0)")
@@ -1677,7 +1698,7 @@ T("Debuff watch: Weakened Soul offered, flashes while on you", function()
     local m = BWm.menu
     local row = findRow(m, "Weakened Soul", true)
     assert(row, "offered to a priest")
-    eq(row.text:GetText(), "|cffff8080Weakened Soul|r", "debuffs shown in red")
+    eq(row.text:GetText(), "|cffff7373Weakened Soul|r", "debuffs shown in red")
     row:SetChecked(true); row:GetScript("OnClick")(row)
     local e = env.SanctumCharDB.buffWatch.list[1]
     eq(e.harmful, true); eq(e.alert, "present")
@@ -1712,7 +1733,7 @@ T("Sound, warning and bar size dropdowns", function()
     local p = env.SanctumCharDB.buffWatch.panel
     env.SlashCmdList.SANCTUM("buffs")
     local m = BWm.menu
-    eq(m.soundButton.text:GetText(), "Sound: Sad Trombone"); eq(m.warnButton.text:GetText(), "Warn: 30s")
+    eq(m.soundButton.text:GetText(), "Sad Trombone"); eq(m.warnButton.text:GetText(), "30 sec")
     -- sound dropdown: every sound listed by name, picking one plays it
     eq(m.soundList:IsShown(), false)
     m.soundButton:GetScript("OnClick")(m.soundButton); eq(m.soundList:IsShown(), true)
@@ -1721,19 +1742,27 @@ T("Sound, warning and bar size dropdowns", function()
     env._sounds = {}
     local si = m.soundList.items[7]
     si:GetScript("OnClick")(si)
-    eq(p.sound, "honk"); eq(m.soundButton.text:GetText(), "Sound: Honk Honk"); eq(m.soundList:IsShown(), false)
+    eq(p.sound, "honk"); eq(m.soundButton.text:GetText(), "Honk Honk"); eq(m.soundList:IsShown(), false)
     eq(env._sounds[1], "Interface\\AddOns\\SanctumMini\\Sounds\\HonkHonk.ogg", "previewed on pick")
     eq(m.fileBox, nil, "no own-file box")
-    -- warning dropdown: 10 to 30 s
+    -- warning dropdown: Off, 10 to 30 s; only one dropdown open at a time
     eq(m.warnList:IsShown(), false)
     m.warnButton:GetScript("OnClick")(m.warnButton); eq(m.warnList:IsShown(), true, "dropdown opens")
-    eq(#m.warnList.items, 5); eq(m.warnList.items[1].text:GetText(), "10 seconds")
-    eq(m.warnList.items[5].text:GetText(), "30 seconds")
-    local it = m.warnList.items[2]
+    eq(#m.warnList.items, 6); eq(m.warnList.items[1].text:GetText(), "Off")
+    eq(m.warnList.items[2].text:GetText(), "10 seconds"); eq(m.warnList.items[6].text:GetText(), "30 seconds")
+    m.soundButton:GetScript("OnClick")(m.soundButton)
+    eq(m.warnList:IsShown(), false, "opening another closes this one"); eq(m.soundList:IsShown(), true)
+    m.soundButton:GetScript("OnClick")(m.soundButton); eq(m.soundList:IsShown(), false)
+    m.warnButton:GetScript("OnClick")(m.warnButton)
+    local it = m.warnList.items[3]
     it:GetScript("OnClick")(it)
-    eq(p.warnSecs, 15); eq(m.warnList:IsShown(), false, "closes on pick"); eq(m.warnButton.text:GetText(), "Warn: 15s")
+    eq(p.warnSecs, 15); eq(m.warnList:IsShown(), false, "closes on pick"); eq(m.warnButton.text:GetText(), "15 sec")
     m.warnButton:GetScript("OnClick")(m.warnButton); m.warnButton:GetScript("OnClick")(m.warnButton)
     eq(m.warnList:IsShown(), false, "second click closes")
+    -- Off: no amber warning at all
+    m.warnButton:GetScript("OnClick")(m.warnButton)
+    it = m.warnList.items[1]; it:GetScript("OnClick")(it)
+    eq(p.warnSecs, 0); eq(m.warnButton.text:GetText(), "Off")
     p.warnSecs = 30
     -- game sound, off, and the removed /sanc alert sound command does nothing harmful
     env._sounds = {}
@@ -1742,13 +1771,13 @@ T("Sound, warning and bar size dropdowns", function()
     p.sound = "off"; env._sounds = {}; BWm.PlayAlert(true); eq(#env._sounds, 0)
     p.sound = "trombone"
     -- bar icon size dropdown: default 22, pick 30, icons follow
-    eq(BWm.BarSize(), 22, "0.6.0 size by default"); eq(m.barSizeButton.text:GetText(), "Bar: 22 px")
+    eq(BWm.BarSize(), 22, "0.6.0 size by default"); eq(m.barSizeButton.text:GetText(), "22 px")
     m.barSizeButton:GetScript("OnClick")(m.barSizeButton); eq(m.barSizeList:IsShown(), true)
     eq(#m.barSizeList.items, 7); eq(m.barSizeList.items[1].text:GetText(), "16 px")
     local bi = m.barSizeList.items[5]; eq(bi.value, 30)
     bi:GetScript("OnClick")(bi)
     eq(env.SanctumCharDB.buffWatch.barSize, 30); eq(BWm.BarSize(), 30)
-    eq(m.barSizeList:IsShown(), false); eq(m.barSizeButton.text:GetText(), "Bar: 30 px")
+    eq(m.barSizeList:IsShown(), false); eq(m.barSizeButton.text:GetText(), "30 px")
     env.SanctumCharDB.buffWatch.barSize = 99; eq(BWm.BarSize(), 44, "out of range clamped")
     env.SanctumCharDB.buffWatch.barSize = nil
     m:Hide()

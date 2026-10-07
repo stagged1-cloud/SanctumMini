@@ -606,10 +606,11 @@ function L.ClampBuffIconSize(px)
     return math.floor(px + 0.5)
 end
 
--- Warning times offered in the dropdown (10 to 30 s), and a clamp for saved values.
-L.WARN_CHOICES = { 10, 15, 20, 25, 30 }
+-- Warning times offered in the dropdown (Off, or 10 to 30 s), and a clamp for saved values.
+L.WARN_CHOICES = { 0, 10, 15, 20, 25, 30 }
 function L.ClampWarn(secs)
     secs = tonumber(secs) or 30
+    if secs <= 0 then return 0 end
     if secs < 10 then return 10 end
     if secs > 30 then return 30 end
     return math.floor(secs + 0.5)

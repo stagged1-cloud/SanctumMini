@@ -4,13 +4,15 @@
 
 - Alert panel: a big, moveable, resizable, lockable panel for the buffs you care about most. In the Buff watch dropdown each ticked entry has a mode button: Bar (the small icon, as before), Panel: gone (flashes red when it is NOT on you) or Panel: on (flashes red while it IS on you)
 - Debuffs on you can now be tracked (shown in red in the dropdown): Weakened Soul (Priest), Forbearance (Paladin), Resurrection Sickness, Recently Bandaged, and anything harmful currently on you. Debuffs always use the panel
-- Amber warning before a Panel: gone buff runs out (pick 10, 15, 20, 25 or 30 seconds from a dropdown; default 30) so you can recast before it drops
+- Amber warning before a Panel: gone buff runs out (Off, or 10, 15, 20, 25 or 30 seconds from a dropdown; default 30) so you can recast before it drops
+- Buff watch is now its own window: drag it by the title bar and it reopens where you left it (it no longer pops up on the Options button or closes with Options). New dark look with a proper border (the old one drew its blue border over the whole background), striped rows, colour-coded mode buttons (grey Bar, red Panel: gone, amber Panel: on) and dropdowns that show the current pick
+- Same dark look across every window: Options, spell picker (it had the same blue border bug), talent planner, cast log, and the party frame drag header
 - Bar icon size: pick 16 to 44 px from the Bar size dropdown next to the hide tick (default 22, as before)
 - "Hide icons while the buff is up" also applies to the unlocked alert panel preview, and its label is now clickable as well as the box
 - Alert sounds, played once when an alert starts, picked from the Sound dropdown (each plays when picked): Sad Trombone, Panic Duck, Boing Bonk, Kazoo Fanfare, Cuckoo Clock, Slide Whistle, Honk Honk, Awooga, the game's raid warning, or off. Restart the game (not just /reload) after updating so it loads the new sound files
 - The panel is locked and hidden until you first move something to it, then unlocks so you can place it. /sanc alert locks or unlocks it; /sanc alert reset puts it back in the middle; /sanc alert test plays the sound
 - Buff watch now treats a buff as gone once its timer has run out, even while Forever blocks reading auras in combat (the bar icon used to sit at 0s until combat ended). A buff removed early in combat (charges used up, dispelled) still shows from the next readable update
-- Test suite: 263 tests
+- Test suite: 264 tests
 
 ## [0.6.0] - 2026-10-06 (Beta, WoW: Forever 1.60.1)
 

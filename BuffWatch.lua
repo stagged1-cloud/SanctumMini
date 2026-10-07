@@ -13,7 +13,6 @@ local D, L, C = ns.Data, ns.Logic, ns.C
 
 local GAP, MAX_ICONS = 3, 8
 local MENU_ROWS = 12
-local MENU_EXTRA = 66                                   -- alert panel controls in the dropdown
 local PSIZE_MIN, PSIZE_MAX, PGAP, PPAD, PMAX = 24, 96, 4, 6, 12
 local QMARK = "Interface\\Icons\\INV_Misc_QuestionMark"
 local issecret = issecretvalue or function() return false end
@@ -194,47 +193,135 @@ function BW.SetTracked(row, on)
     BW.Update()
 end
 
+-- Buff watch window colours (0.7.0 restyle): dark slate, 1 px borders, gold headings.
+local COL = {
+    bg = { 0.067, 0.075, 0.094, 0.97 }, edge = { 0.30, 0.32, 0.38, 1 }, title = { 0.11, 0.12, 0.155, 1 },
+    line = { 0.24, 0.26, 0.31, 1 }, stripe = { 1, 1, 1, 0.035 }, pick = { 0.35, 0.55, 0.85, 0.35 },
+    btn = { 0.15, 0.165, 0.20, 1 }, btnHover = { 0.22, 0.24, 0.30, 1 },
+    modeBar = { 0.18, 0.20, 0.25, 1 }, modeGone = { 0.50, 0.13, 0.13, 1 }, modeOn = { 0.55, 0.36, 0.06, 1 },
+}
+local function paint(tex, c) tex:SetColorTexture(c[1], c[2], c[3], c[4]) end
+
+-- Fill with a 1 px border: the border colour sits underneath, the fill is inset over it.
+local function skin(f, fill)
+    local e = f:CreateTexture(nil, "BACKGROUND", nil, -8); e:SetAllPoints(); paint(e, COL.edge)
+    local b = f:CreateTexture(nil, "BACKGROUND", nil, -7)
+    b:SetPoint("TOPLEFT", 1, -1); b:SetPoint("BOTTOMRIGHT", -1, 1)
+    paint(b, fill or COL.bg)
+    f.fill = b
+end
+
+-- Flat button with hover. tip = text, or function(self) that fills GameTooltip.
+local function styledButton(parent, w, h, tip)
+    local b = CreateFrame("Button", nil, parent)
+    b:SetSize(w, h)
+    skin(b, COL.btn)
+    b.base = COL.btn
+    b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); b.text:SetPoint("CENTER")
+    b:SetScript("OnEnter", function(self)
+        paint(self.fill, COL.btnHover)
+        if tip then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            if type(tip) == "function" then tip(self) else GameTooltip:AddLine(tip, 1, 1, 1, true) end
+            GameTooltip:Show()
+        end
+    end)
+    b:SetScript("OnLeave", function(self) paint(self.fill, self.base); GameTooltip:Hide() end)
+    return b
+end
+
+local function modeTip()
+    GameTooltip:AddLine("Where this one shows")
+    GameTooltip:AddLine("Bar: small icon on your bar (buffs only)", 1, 1, 1)
+    GameTooltip:AddLine("Panel: gone - alert panel flashes red when it is NOT on you", 1, 1, 1)
+    GameTooltip:AddLine("Panel: on - alert panel flashes red while it IS on you", 1, 1, 1)
+    GameTooltip:AddLine("Click to change", 0.7, 0.7, 0.7)
+end
+
+local ROW_H, ROWS_TOP = 20, -54
+local MENU_W, MENU_H = 360, 446
+
+function BW.PlaceMenu()
+    local m = BW.menu
+    if not m then return end
+    local pos = db().menuPos
+    m:ClearAllPoints()
+    if type(pos) == "table" and pos.point then
+        m:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
+    else
+        m:SetPoint("CENTER", UIParent, "CENTER", 260, 40)
+    end
+end
+
 local function buildMenu()
     local m = CreateFrame("Frame", "SanctumBuffWatchMenu", UIParent)
-    m:SetSize(320, 74 + MENU_EXTRA + MENU_ROWS * 20)
-    m:SetFrameStrata("FULLSCREEN_DIALOG")
+    m:SetSize(MENU_W, MENU_H)
+    m:SetFrameStrata("DIALOG")
+    m:SetToplevel(true)
+    m:SetMovable(true)
     m:EnableMouse(true)
     m:EnableMouseWheel(true)
     m:SetClampedToScreen(true)
-    local bg = m:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints(); bg:SetColorTexture(0.02, 0.02, 0.05, 0.97)
-    local edge = m:CreateTexture(nil, "BORDER"); edge:SetPoint("TOPLEFT", -1, 1); edge:SetPoint("BOTTOMRIGHT", 1, -1)
-    edge:SetColorTexture(0.2, 0.5, 0.8, 1)
-    local t = m:CreateFontString(nil, "OVERLAY", "GameFontNormal"); t:SetPoint("TOPLEFT", 8, -6)
-    t:SetText("Buff watch - tick to track")
-    local close = CreateFrame("Button", nil, m, "UIPanelCloseButton"); close:SetSize(20, 20); close:SetPoint("TOPRIGHT", 0, 0)
+    skin(m, COL.bg)
+
+    -- Title bar: drag to move; position is remembered per character.
+    local tb = CreateFrame("Frame", nil, m)
+    tb:SetPoint("TOPLEFT", 1, -1); tb:SetPoint("TOPRIGHT", -1, -1); tb:SetHeight(26)
+    local tbg = tb:CreateTexture(nil, "BACKGROUND"); tbg:SetAllPoints(); paint(tbg, COL.title)
+    local tline = tb:CreateTexture(nil, "ARTWORK"); tline:SetHeight(1)
+    tline:SetPoint("BOTTOMLEFT"); tline:SetPoint("BOTTOMRIGHT"); paint(tline, COL.edge)
+    tb:EnableMouse(true)
+    tb:RegisterForDrag("LeftButton")
+    tb:SetScript("OnDragStart", function() m:StartMoving() end)
+    tb:SetScript("OnDragStop", function()
+        m:StopMovingOrSizing()
+        local point, _, relPoint, x, y = m:GetPoint()
+        db().menuPos = { point = point or "CENTER", relPoint = relPoint or point or "CENTER",
+                         x = math.floor((x or 0) + 0.5), y = math.floor((y or 0) + 0.5) }
+    end)
+    local t = tb:CreateFontString(nil, "OVERLAY", "GameFontNormal"); t:SetPoint("LEFT", 10, 0)
+    t:SetText("Sanctum Buff Watch")
+    local sub = tb:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall"); sub:SetPoint("LEFT", t, "RIGHT", 8, -1)
+    sub:SetText("drag to move")
+    m.titleBar = tb
+    local close = CreateFrame("Button", nil, m, "UIPanelCloseButton"); close:SetSize(24, 24); close:SetPoint("TOPRIGHT", 0, 0)
+    close:SetFrameLevel(tb:GetFrameLevel() + 2)
+
+    local function section(text, y)
+        local h = m:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); h:SetPoint("TOPLEFT", 12, y); h:SetText(text)
+        local ln = m:CreateTexture(nil, "ARTWORK"); ln:SetHeight(1)
+        ln:SetPoint("TOPLEFT", 10, y - 14); ln:SetPoint("TOPRIGHT", -10, y - 14); paint(ln, COL.line)
+        return h
+    end
+    local function label(text, x, y)
+        local fs = m:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); fs:SetPoint("TOPLEFT", x, y); fs:SetText(text)
+        return fs
+    end
+
+    -- Tracked list
+    section("Track buffs and debuffs on you", -34)
+    m.countText = m:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall"); m.countText:SetPoint("TOPRIGHT", -12, -34)
     m.offset = 0
     m.rows = {}
     for i = 1, MENU_ROWS do
+        local y = ROWS_TOP - (i - 1) * ROW_H
+        local band = m:CreateTexture(nil, "BORDER")
+        band:SetPoint("TOPLEFT", 8, y); band:SetPoint("TOPRIGHT", -8, y); band:SetHeight(ROW_H)
+        paint(band, COL.stripe)
         local r = CreateFrame("CheckButton", nil, m, "UICheckButtonTemplate")
         r:SetSize(20, 20)
-        r:SetPoint("TOPLEFT", 8, -24 - (i - 1) * 20)
-        r.icon = r:CreateTexture(nil, "ARTWORK"); r.icon:SetSize(16, 16); r.icon:SetPoint("LEFT", r, "RIGHT", 2, 0)
+        r:SetPoint("TOPLEFT", 10, y)
+        r:SetHitRectInsets(0, -200, 0, 0)            -- the name is clickable too
+        r.band = band
+        r.icon = r:CreateTexture(nil, "ARTWORK"); r.icon:SetSize(16, 16); r.icon:SetPoint("LEFT", r, "RIGHT", 3, 0)
         r.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
         r.text = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        r.text:SetPoint("LEFT", r.icon, "RIGHT", 5, 0)
-        r.text:SetWidth(180); r.text:SetJustifyH("LEFT"); r.text:SetWordWrap(false)
-        -- Mode button (shown once ticked): Bar / Panel: gone / Panel: on
-        local mb = CreateFrame("Button", nil, m)
-        mb:SetSize(72, 18)
-        mb:SetPoint("TOPRIGHT", m, "TOPRIGHT", -8, -25 - (i - 1) * 20)
-        local mbg = mb:CreateTexture(nil, "BACKGROUND"); mbg:SetAllPoints(); mbg:SetColorTexture(0.15, 0.25, 0.4, 0.9)
-        mb.text = mb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); mb.text:SetPoint("CENTER")
+        r.text:SetPoint("LEFT", r.icon, "RIGHT", 6, 0)
+        r.text:SetWidth(200); r.text:SetJustifyH("LEFT"); r.text:SetWordWrap(false)
+        -- Mode pill (shown once ticked): Bar / Panel: gone / Panel: on
+        local mb = styledButton(m, 84, 18, modeTip)
+        mb:SetPoint("TOPRIGHT", m, "TOPRIGHT", -12, y - 1)
         mb:SetScript("OnClick", function() if r.row then BW.CycleMode(r.row); m:Fill() end end)
-        mb:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:AddLine("Where this one shows")
-            GameTooltip:AddLine("Bar: small icon on your bar (buffs only)", 1, 1, 1)
-            GameTooltip:AddLine("Panel: gone - alert panel flashes red when it is NOT on you", 1, 1, 1)
-            GameTooltip:AddLine("Panel: on - alert panel flashes red while it IS on you", 1, 1, 1)
-            GameTooltip:AddLine("Click to change", 0.7, 0.7, 0.7)
-            GameTooltip:Show()
-        end)
-        mb:SetScript("OnLeave", function() GameTooltip:Hide() end)
         mb:Hide()
         r.mode = mb
         r:SetScript("OnClick", function(self)
@@ -242,107 +329,134 @@ local function buildMenu()
         end)
         m.rows[i] = r
     end
-    -- Alert panel controls (0.7.0), above the hide tick.
-    local head = m:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); head:SetPoint("BOTTOMLEFT", 10, 94)
-    head:SetText("Alert panel")
-    local function smallButton(w, x, y, tip)
-        local b = CreateFrame("Button", nil, m)
-        b:SetSize(w, 18); b:SetPoint("BOTTOMLEFT", x, y)
-        local bg = b:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints(); bg:SetColorTexture(0.15, 0.25, 0.4, 0.9)
-        b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); b.text:SetPoint("CENTER")
-        b:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:AddLine(tip, 1, 1, 1, true); GameTooltip:Show()
-        end)
-        b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    -- Dropdowns open upwards from their button; only one is open at a time.
+    m.lists = {}
+    local function dropButton(w, x, y, tip)
+        local b = styledButton(m, w, 20, tip)
+        b:SetPoint("TOPLEFT", x, y)
+        b.text:ClearAllPoints(); b.text:SetPoint("LEFT", 8, 0); b.text:SetPoint("RIGHT", -18, 0); b.text:SetJustifyH("LEFT")
+        local arrow = b:CreateTexture(nil, "OVERLAY"); arrow:SetSize(16, 16); arrow:SetPoint("RIGHT", -2, 0)
+        arrow:SetTexture("Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Up")
+        arrow:SetTexCoord(0.2, 0.8, 0.25, 0.75)
         return b
     end
-    -- Small dropdown list that opens upwards from a button. onPick(value) is called on a pick.
-    local function dropdown(button, values, text, onPick, width)
-        width = width or 84
+    local function dropdown(button, width, values, text, current, onPick)
         local wl = CreateFrame("Frame", nil, m)
         wl:SetSize(width, #values * 18 + 4)
         wl:SetPoint("BOTTOMLEFT", button, "TOPLEFT", 0, 2)
         wl:SetFrameLevel(m:GetFrameLevel() + 20)
         wl:EnableMouse(true)
-        local wbg = wl:CreateTexture(nil, "BACKGROUND"); wbg:SetAllPoints(); wbg:SetColorTexture(0.05, 0.08, 0.15, 0.98)
-        local wedge = wl:CreateTexture(nil, "BORDER"); wedge:SetPoint("TOPLEFT", -1, 1); wedge:SetPoint("BOTTOMRIGHT", 1, -1)
-        wedge:SetColorTexture(0.2, 0.5, 0.8, 1)
+        skin(wl, COL.title)
         wl.items = {}
         for i, v in ipairs(values) do
             local it = CreateFrame("Button", nil, wl)
             it:SetSize(width - 4, 18); it:SetPoint("TOPLEFT", 2, -2 - (i - 1) * 18)
-            local hl = it:CreateTexture(nil, "HIGHLIGHT"); hl:SetAllPoints(); hl:SetColorTexture(0.3, 0.5, 0.8, 0.5)
-            it.text = it:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); it.text:SetPoint("LEFT", 6, 0)
+            local hl = it:CreateTexture(nil, "HIGHLIGHT"); hl:SetAllPoints(); paint(hl, COL.pick)
+            it.text = it:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); it.text:SetPoint("LEFT", 8, 0)
             it.text:SetText(text(v))
             it.value = v
             it:SetScript("OnClick", function() wl:Hide(); onPick(v); m:FillPanel(); BW.Update() end)
             wl.items[i] = it
         end
         wl:Hide()
-        button:SetScript("OnClick", function() wl:SetShown(not wl:IsShown()) end)
+        button:SetScript("OnClick", function()
+            local show = not wl:IsShown()
+            for _, l in ipairs(m.lists) do l:Hide() end
+            if show then
+                local cur = current()
+                for _, it in ipairs(wl.items) do
+                    if it.value == cur then it.text:SetTextColor(1, 0.82, 0) else it.text:SetTextColor(1, 1, 1) end
+                end
+                wl:Show()
+            end
+        end)
+        m.lists[#m.lists + 1] = wl
         return wl
     end
-    local warn = smallButton(80, 10, 71, "Amber warning before a 'Panel: gone' buff runs out. Click to choose 10 to 30 seconds.")
-    m.warnButton = warn
-    m.warnList = dropdown(warn, L.WARN_CHOICES, function(v) return v .. " seconds" end,
-        function(v) pdb().warnSecs = v end)
-    local bar = smallButton(76, 236, 27, "Size of the small icons on your bar. Click to choose.")
-    m.barSizeButton = bar
-    m.barSizeList = dropdown(bar, L.BUFF_ICON_SIZES, function(v) return v .. " px" end,
-        function(v) db().barSize = v end)
-    local snd = smallButton(160, 96, 71, "Sound when an alert starts. Click to choose; each one plays when picked.")
-    m.soundButton = snd
-    local soundKeys, soundLabels = {}, {}
-    for _, s in ipairs(D.alertSounds) do soundKeys[#soundKeys + 1] = s.key; soundLabels[s.key] = s.label end
-    m.soundList = dropdown(snd, soundKeys, function(k) return soundLabels[k] end,
-        function(k) pdb().sound = k; BW.PlayAlert(true) end, 140)
-    local lock = CreateFrame("CheckButton", nil, m, "UICheckButtonTemplate")
-    lock:SetSize(20, 20); lock:SetPoint("BOTTOMLEFT", 8, 48)
-    lock:SetHitRectInsets(0, -260, 0, 0)            -- the label is clickable too
-    local ll = lock:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); ll:SetPoint("LEFT", lock, "RIGHT", 2, 0)
-    ll:SetText("Lock alert panel (untick to move and resize it)")
-    lock:SetScript("OnClick", function(self) BW.SetPanelLocked(self:GetChecked() and true or false) end)
-    m.lockCheck = lock
-    function m:FillPanel()
-        local p = pdb()
-        self.lockCheck:SetChecked(p.locked)
-        self.warnButton.text:SetText("Warn: " .. L.ClampWarn(p.warnSecs) .. "s")
-        self.warnList:Hide()
-        self.barSizeButton.text:SetText("Bar: " .. BW.BarSize() .. " px")
-        self.barSizeList:Hide()
-        local label = "Off"
-        for _, s in ipairs(D.alertSounds) do if s.key == p.sound then label = s.label end end
-        self.soundButton.text:SetText("Sound: " .. label)
-        self.soundList:Hide()
-    end
+
+    -- Bar icons
+    section("Bar icons", -300)
     local hide = CreateFrame("CheckButton", nil, m, "UICheckButtonTemplate")
-    hide:SetSize(20, 20); hide:SetPoint("BOTTOMLEFT", 8, 26)
+    hide:SetSize(20, 20); hide:SetPoint("TOPLEFT", 10, -320)
     hide:SetHitRectInsets(0, -200, 0, 0)            -- the label is clickable too
     local hl = hide:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); hl:SetPoint("LEFT", hide, "RIGHT", 2, 0)
     hl:SetText("Hide icons while the buff is up")
     hide:SetScript("OnShow", function(self) self:SetChecked(db().hideWhileUp) end)
     hide:SetScript("OnClick", function(self) db().hideWhileUp = self:GetChecked() and true or false; BW.Update() end)
     m.hideCheck = hide
-    local hint = m:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); hint:SetPoint("BOTTOMLEFT", 8, 8)
-    hint:SetText("|cff999999Icons sit on your own bar and flash when missing|r")
+    label("Size", 238, -324)
+    local bar = dropButton(80, 268, -320, "Size of the small icons on your bar")
+    m.barSizeButton = bar
+    m.barSizeList = dropdown(bar, 80, L.BUFF_ICON_SIZES, function(v) return v .. " px" end,
+        function() return BW.BarSize() end, function(v) db().barSize = v end)
+
+    -- Alert panel
+    section("Alert panel", -350)
+    local lock = CreateFrame("CheckButton", nil, m, "UICheckButtonTemplate")
+    lock:SetSize(20, 20); lock:SetPoint("TOPLEFT", 10, -370)
+    lock:SetHitRectInsets(0, -260, 0, 0)            -- the label is clickable too
+    local ll = lock:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); ll:SetPoint("LEFT", lock, "RIGHT", 2, 0)
+    ll:SetText("Lock alert panel (untick to move and resize it)")
+    lock:SetScript("OnClick", function(self) BW.SetPanelLocked(self:GetChecked() and true or false) end)
+    m.lockCheck = lock
+    label("Warn", 14, -401)
+    local warn = dropButton(76, 46, -397, "Amber warning before a 'Panel: gone' buff runs out")
+    m.warnButton = warn
+    m.warnList = dropdown(warn, 90, L.WARN_CHOICES, function(v) return v == 0 and "Off" or (v .. " seconds") end,
+        function() return L.ClampWarn(pdb().warnSecs) end, function(v) pdb().warnSecs = v end)
+    label("Sound", 136, -401)
+    local snd = dropButton(170, 178, -397, "Sound when an alert starts; each one plays when picked")
+    m.soundButton = snd
+    local soundKeys, soundLabels = {}, {}
+    for _, x in ipairs(D.alertSounds) do soundKeys[#soundKeys + 1] = x.key; soundLabels[x.key] = x.label end
+    m.soundList = dropdown(snd, 170, soundKeys, function(k) return soundLabels[k] end,
+        function() return pdb().sound end, function(k) pdb().sound = k; BW.PlayAlert(true) end)
+
+    local hint = m:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall"); hint:SetPoint("BOTTOMLEFT", 12, 10)
+    hint:SetText("Scroll the list for more. Debuffs (red) always use the alert panel.")
+
+    function m:FillPanel()
+        local p = pdb()
+        self.lockCheck:SetChecked(p.locked)
+        local w = L.ClampWarn(p.warnSecs)
+        self.warnButton.text:SetText(w == 0 and "Off" or (w .. " sec"))
+        self.barSizeButton.text:SetText(BW.BarSize() .. " px")
+        local name = "Off"
+        for _, x in ipairs(D.alertSounds) do if x.key == p.sound then name = x.label end end
+        self.soundButton.text:SetText(name)
+        for _, l in ipairs(self.lists) do l:Hide() end
+    end
     function m:Fill()
         local rows = BW.Candidates()
         self.items = rows
         local maxOff = math.max(0, #rows - MENU_ROWS)
         if self.offset > maxOff then self.offset = maxOff end
+        self.countText:SetText(#rows > MENU_ROWS
+            and ((self.offset + 1) .. "-" .. math.min(#rows, self.offset + MENU_ROWS) .. " of " .. #rows) or "")
         for i, r in ipairs(self.rows) do
             local row = rows[i + self.offset]
             r.row = row
             if row then
                 r:SetChecked(row.checked)
                 r.icon:SetTexture(row.icon or C.GetSpellIcon((row.accept and row.accept[1]) or row.key) or QMARK)
-                r.text:SetText(row.harmful and ("|cffff8080" .. row.label .. "|r") or row.label)
+                r.text:SetText(row.harmful and ("|cffff7373" .. row.label .. "|r") or row.label)
                 r:Show()
+                r.band:SetShown(i % 2 == 0)
                 local e = row.checked and BW.Entry(row)
-                if e then r.mode.text:SetText(L.AlertModeLabel(L.AlertMode(e))); r.mode:Show() else r.mode:Hide() end
+                if e then
+                    local mode = L.AlertMode(e)
+                    r.mode.text:SetText(L.AlertModeLabel(mode))
+                    r.mode.base = (mode == "missing" and COL.modeGone) or (mode == "present" and COL.modeOn) or COL.modeBar
+                    paint(r.mode.fill, r.mode.base)
+                    r.mode:Show()
+                else
+                    r.mode:Hide()
+                end
             else
                 r:Hide()
                 r.mode:Hide()
+                r.band:Hide()
             end
         end
         self:FillPanel()
@@ -607,13 +721,13 @@ function BW.AlertCommand(msg)
     ns.Print(pdb().locked and "alert panel locked" or "alert panel unlocked: drag to move, resize from the corner")
 end
 
--- anchor: the button it drops from (nil = screen centre).
-function BW.ToggleMenu(anchor)
+-- Opens or closes the Buff watch window. It is its own window: it opens where you last
+-- dragged it, not on the Options button (the argument is kept for old callers and ignored).
+function BW.ToggleMenu()
     BW.menu = BW.menu or buildMenu()
     local m = BW.menu
     if m:IsShown() then m:Hide(); return end
-    m:ClearAllPoints()
-    if anchor then m:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", 0, 4) else m:SetPoint("CENTER") end
+    BW.PlaceMenu()
     m.offset = 0
     m:Show()
     m:Fill()
@@ -627,7 +741,7 @@ function BW.Init()
     BW.holder = CreateFrame("Frame", "SanctumBuffWatch", F.anchor)
     BW.holder:SetSize(BW.BarSize(), BW.BarSize())
     BW.icons = {}
-    pdb().warnSecs = L.ClampWarn(pdb().warnSecs)    -- 10 to 30 s (0.7.0 test builds allowed off and 60)
+    pdb().warnSecs = L.ClampWarn(pdb().warnSecs)    -- Off or 10 to 30 s
     pdb().sound = L.ValidSound(D.alertSounds, pdb().sound)   -- test builds had an own-file option
     pdb().soundFile = nil
     BW.BuildPanel()
