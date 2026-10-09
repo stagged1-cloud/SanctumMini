@@ -3,6 +3,10 @@
 ## [0.7.1] - 2026-10-09 (Beta, WoW: Forever 1.60.1)
 
 - Buff watch no longer shows false "missing" alerts, or overwrites its last known state, when the game hides aura names in combat
+- Buff watch no longer flashes "missing" when you recast a buff during a fight with aura reads blocked, and no longer shows a false amber warning from an out-of-date timer
+- The 8-icon limit now counts only bar icons (alert panel entries have their own limit of 12), and a warning appears at login if a saved list has more than can be drawn
+- Buff watch keeps updating while the UI is hidden (Alt-Z)
+- The goals checklist no longer refreshes repeatedly while an item never loads
 - The login message now shows the real version
 - Buff watch refreshes aura changes in batches instead of on every event
 - The goals checklist batches its refreshes and skips them during combat

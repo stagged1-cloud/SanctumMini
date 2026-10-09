@@ -38,14 +38,17 @@ function BW.ReadAuras(filter)
             C.auraBlocked = (C.auraBlocked or 0) + 1
         elseif a.name then
             local exp = a.expirationTime
+            local estimated = false
             if issecret(exp) then
                 -- Unknown expiry: keep the last known one while it is still ahead, else none.
+                -- Flagged as an estimate: it may be from before a recast, so no warning is built on it.
                 local old = prev[a.name] and prev[a.name].expirationTime
                 exp = (old and old > GetTime()) and old or nil
+                estimated = true
             end
             local icon = a.icon
             if issecret(icon) then icon = nil end
-            auras[a.name] = { icon = icon, expirationTime = exp }
+            auras[a.name] = { icon = icon, expirationTime = exp, estimated = estimated or nil }
         end
     end)
     if (C.auraBlocked or 0) > before then return nil end
@@ -118,21 +121,27 @@ function BW.Update()
     if auras then BW.lastAuras = auras end
     local wantHarmful = false
     for _, t in ipairs(tracked) do if t.harmful then wantHarmful = true end end
+    local harmBlocked = false
     if wantHarmful then
         local harmful = BW.ReadAuras("HARMFUL")
-        if harmful then BW.lastHarmful = harmful end
+        if harmful then BW.lastHarmful = harmful else harmBlocked = true end
     end
     local now = GetTime()
-    local states = L.BuffWatchState(tracked, BW.lastAuras or {}, now, BW.ReadWeapon(), BW.lastHarmful or {})
+    -- A blocked read leaves the last known lists in use: hold their state (no expiry-based "missing").
+    local states = L.BuffWatchState(tracked, BW.lastAuras or {}, now, BW.ReadWeapon(), BW.lastHarmful or {},
+                                    { helpful = auras == nil, harmful = harmBlocked })
     local anyMissing = false
     local n = 0
     local barSize = BW.BarSize()
+    local barEntries = 0
     for i, st in ipairs(states) do
-        if i > MAX_ICONS then break end
         local b = BW.icons[i] or makeIcon(i)
         BW.icons[i] = b
         b.state = st
-        if L.IsPanelEntry(tracked[i]) or (st.up and db().hideWhileUp) then
+        local onBar = not L.IsPanelEntry(tracked[i])
+        if onBar then barEntries = barEntries + 1 end
+        -- Only the first MAX_ICONS bar entries are drawn (panel entries do not count towards it).
+        if not onBar or barEntries > MAX_ICONS or (st.up and db().hideWhileUp) then
             b:Hide()
         else
             n = n + 1
@@ -193,8 +202,17 @@ local function sameKind(a, b) return (a.harmful and true or false) == (b.harmful
 function BW.SetTracked(row, on)
     local list = db().list
     for i = #list, 1, -1 do if list[i].key == row.key and sameKind(list[i], row) then table.remove(list, i) end end
-    if on and #list >= MAX_ICONS then
-        ns.Print("buff watch is full (%d entries): untick one before adding %s", MAX_ICONS, row.label or row.key)
+    -- The cap is per place: 8 bar icons (panel entries do not count), and PMAX alert panel entries.
+    local bar, panel = 0, 0
+    for _, t in ipairs(list) do
+        if L.IsPanelEntry(t) then panel = panel + 1 else bar = bar + 1 end
+    end
+    local toPanel = L.IsPanelEntry({ harmful = row.harmful, alert = L.DefaultAlertMode(row.harmful) })
+    if on and not toPanel and bar >= MAX_ICONS then
+        ns.Print("buff watch bar is full (%d bar icons): untick one or move one to the panel before adding %s",
+                 MAX_ICONS, row.label or row.key)
+    elseif on and toPanel and panel >= PMAX then
+        ns.Print("alert panel is full (%d entries): untick one before adding %s", PMAX, row.label or row.key)
     elseif on then
         list[#list + 1] = { key = row.key, label = row.label, accept = row.accept, weapon = row.weapon,
                             harmful = row.harmful, alert = L.DefaultAlertMode(row.harmful),
@@ -744,6 +762,21 @@ function BW.ToggleMenu()
     m:Fill()
 end
 
+-- One-time login warning when a saved list has more entries than can be drawn
+-- (bar: MAX_ICONS bar entries; panel: PMAX panel entries). Nothing is deleted.
+function BW.WarnOverflow()
+    local bar, panel = 0, 0
+    for _, t in ipairs(db().list) do
+        if L.IsPanelEntry(t) then panel = panel + 1 else bar = bar + 1 end
+    end
+    if bar > MAX_ICONS then
+        ns.Print("buff watch: %d bar entries saved but only %d icons are drawn; untick some or move them to the alert panel", bar, MAX_ICONS)
+    end
+    if panel > PMAX then
+        ns.Print("buff watch: %d alert panel entries saved but only %d are drawn; untick some", panel, PMAX)
+    end
+end
+
 ---------------------------------------------------------------------------
 -- Init
 ---------------------------------------------------------------------------
@@ -755,6 +788,7 @@ function BW.Init()
     pdb().warnSecs = L.ClampWarn(pdb().warnSecs)    -- Off or 10 to 30 s
     pdb().sound = L.ValidSound(D.alertSounds, pdb().sound)   -- test builds had an own-file option
     pdb().soundFile = nil
+    BW.WarnOverflow()
     BW.BuildPanel()
     -- Follow the player bar when the frames are laid out again or (un)locked.
     for _, fn in ipairs({ "Layout", "UpdateLock" }) do
@@ -771,7 +805,8 @@ function BW.Init()
                          "UNIT_INVENTORY_CHANGED", "PLAYER_REGEN_ENABLED" }) do
         ns.On(e, function() BW.Update() end)
     end
-    BW.driver = CreateFrame("Frame", nil, UIParent)
+    -- No parent (not UIParent): the driver keeps running while the UI is hidden (Alt-Z).
+    BW.driver = CreateFrame("Frame")
     BW.driver:SetScript("OnUpdate", onUpdate)
     BW.ready = true
     BW.Update()

@@ -418,10 +418,15 @@ end
 -- auras   = { [name] = { icon, expirationTime, duration } } (your helpful auras)
 -- weapon  = { mainHand = bool, mainHandMs = number } (temporary weapon enchant)
 -- Returns { { key, label, icon, up, remaining } } in tracked order.
-function L.BuffWatchState(tracked, auras, now, weapon, harmful)
+-- blocked = { helpful = bool, harmful = bool } (optional): that list is the last known one because
+-- the latest aura read was blocked. A buff is then never moved from up to missing just because its
+-- stored expiry passed (it may have been recast meanwhile), and its time left is not trusted
+-- (st.stale) so the alert panel will not show an amber warning from it.
+function L.BuffWatchState(tracked, auras, now, weapon, harmful, blocked)
     local out = {}
     auras = auras or {}
     harmful = harmful or {}
+    blocked = blocked or {}
     for _, t in ipairs(tracked or {}) do
         local st = { key = t.key, label = t.label or t.key, icon = t.icon, up = false, harmful = t.harmful }
         if t.weapon then
@@ -430,16 +435,19 @@ function L.BuffWatchState(tracked, auras, now, weapon, harmful)
         else
             -- Debuffs (harmful = true) are read from the harmful aura list.
             local src = t.harmful and harmful or auras
+            local held = (t.harmful and blocked.harmful or (not t.harmful and blocked.helpful)) and true or false
             for _, name in ipairs(t.accept or { t.key }) do
                 local a = src[name]
                 local exp = a and tonumber(a.expirationTime)
-                -- Past its expiry time it has fallen off, even when the last read (kept
-                -- because Forever blocked reading auras in combat) still lists it.
-                if a and exp and exp > 0 and now and exp <= now then a = nil end
+                local guess = a and (a.estimated or held)   -- expiry is not from this read
+                -- Past its expiry time it has fallen off, but only on a clean read: while reads are
+                -- blocked the buff may have been recast, so the last known state is held.
+                if a and exp and exp > 0 and now and exp <= now and not guess then a = nil end
                 if a then
                     st.up = true
                     st.icon = a.icon or st.icon
-                    if exp and exp > 0 and now then st.remaining = math.max(0, exp - now) end
+                    if guess then st.stale = true end
+                    if exp and exp > 0 and now and exp > now then st.remaining = exp - now end
                     break
                 end
             end
@@ -568,7 +576,7 @@ function L.AlertState(tracked, states, warnSecs)
             if mode == "missing" then
                 if not st.up then
                     level = "alert"
-                elseif warnSecs and warnSecs > 0 and st.remaining and st.remaining <= warnSecs then
+                elseif warnSecs and warnSecs > 0 and st.remaining and st.remaining <= warnSecs and not st.stale then
                     level = "warn"
                 end
             elseif st.up then

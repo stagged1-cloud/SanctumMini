@@ -22,8 +22,12 @@ local function enchantedFromLink(link)
     return e ~= nil and e ~= "" and e ~= "0"
 end
 
+-- Item IDs the last snapshot asked the client about. GET_ITEM_INFO_RECEIVED only matters for these.
+local requested = {}
+
 function G.Snapshot()
     local gd = D.goals
+    requested = {}
     local snap = {
         level = UnitLevel("player"),
         inCombat = InCombatLockdown() or UnitAffectingCombat("player"),
@@ -35,6 +39,8 @@ function G.Snapshot()
     for _, slot in ipairs(gd.gearSlots) do
         local link = GetInventoryItemLink("player", slot.id)
         if link then
+            local linkId = tonumber(link:match("item:(%d+)"))
+            if linkId then requested[linkId] = true end
             local ilvl, req = C.GetItemLevels(link)
             local cur, max = GetInventoryItemDurability(slot.id)
             snap.slots[slot.id] = { link = link, itemLevel = ilvl, reqLevel = req, durCur = cur, durMax = max,
@@ -45,6 +51,7 @@ function G.Snapshot()
     end
     local function countIds(ids)
         for _, id in ipairs(ids) do
+            requested[id] = true
             snap.counts[id] = C.GetItemCount(id)
             local _, req = C.GetItemLevels(id)
             if req then snap.itemReqLevel[id] = req end
@@ -182,15 +189,20 @@ end
 -- Bursts of events (auras, item info, bags) collapse into one snapshot. A dirty
 -- flag records that a refresh is wanted; a single timer clears it. Nothing runs
 -- in combat: the flag stays set and PLAYER_REGEN_ENABLED refreshes once. Events
--- raised during the refresh itself (item info arriving for the scan) are ignored
--- so a snapshot cannot re-trigger itself.
+-- raised synchronously during the refresh itself are ignored. Item info arrives
+-- LATER (after the flush), so GET_ITEM_INFO_RECEIVED is handled separately: only
+-- for item IDs the scan requested, and at most one retry per ID per scan cycle (a
+-- cycle starts with any other refresh trigger), so an item that never resolves
+-- cannot keep the panel refreshing.
 local QUEUE_DELAY = 0.75
 local dirty, timerSet, refreshing = false, false, false
+local freshCycle, retried = true, {}
 
 local function flush()
     timerSet = false
     if not dirty or InCombatLockdown() then return end
     dirty = false
+    if freshCycle then retried = {}; freshCycle = false end
     refreshing = true
     local ok, err = pcall(G.Refresh)
     refreshing = false
@@ -206,6 +218,17 @@ end
 function G.Queue()
     if not G.ready or refreshing then return end
     dirty = true
+    freshCycle = true
+    if InCombatLockdown() then return end
+    schedule()
+end
+
+-- GET_ITEM_INFO_RECEIVED(itemID, success): retry the scan once per requested item ID per cycle.
+function G.OnItemInfo(_, itemID)
+    if not G.ready or refreshing then return end
+    if not itemID or not requested[itemID] or retried[itemID] then return end
+    retried[itemID] = true
+    dirty = true
     if InCombatLockdown() then return end
     schedule()
 end
@@ -215,6 +238,7 @@ end
 function G.OnCombatEnd()
     if not G.ready then return end
     dirty = true
+    freshCycle = true
     schedule()
 end
 
@@ -223,6 +247,7 @@ end
 function G.SetShown(v)
     ns.db.goals.shown = v and true or false
     G.frame:SetShown(ns.db.goals.shown)
+    retried = {}                      -- opening the panel starts a new scan cycle
     G.Refresh()
     if ns.Options and ns.Options.Refresh then ns.Options.Refresh() end
 end
@@ -273,9 +298,10 @@ function G.Init()
 
     for _, e in ipairs({ "PLAYER_EQUIPMENT_CHANGED", "BAG_UPDATE_DELAYED", "PLAYER_LEVEL_UP",
                          "UPDATE_INVENTORY_DURABILITY", "PLAYER_REGEN_DISABLED",
-                         "PLAYER_ENTERING_WORLD", "GET_ITEM_INFO_RECEIVED", "ZONE_CHANGED_NEW_AREA" }) do
+                         "PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA" }) do
         ns.On(e, G.Queue)
     end
+    ns.On("GET_ITEM_INFO_RECEIVED", G.OnItemInfo)
     ns.On("PLAYER_REGEN_ENABLED", G.OnCombatEnd)
     ns.On("UNIT_AURA", function(_, unit) if unit == "player" then G.Queue() end end)
     ns.On("TRAINER_SHOW", G.ScanTrainer)

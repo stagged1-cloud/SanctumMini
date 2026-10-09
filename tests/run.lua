@@ -1040,7 +1040,7 @@ local function mockEnv()
         frames[#frames + 1] = o
         return o
     end
-    env.CreateFrame = function(kind, name) return newObj(kind, name) end
+    env.CreateFrame = function(kind, name, parent) local o = newObj(kind, name); o._parent = parent; return o end
     env.UIParent = newObj("Frame")
     env.GameTooltip = newObj("GameTooltip")
     env.GameTooltip_SetDefaultAnchor = function() end
@@ -1677,8 +1677,11 @@ T("Alert panel: buff on 'Panel: gone' flashes red when it falls off, one sound",
     m:Hide()
 end)
 
--- SM3: expiry fallback on the bar: a stale read with a timed-out buff shows missing
-T("Expiry fallback: blocked read after the buff timed out shows it missing", function()
+-- SM3: expiry vs blocked reads. CHANGED in 0.7.1 (review fix): this test used to assert that a
+-- BLOCKED read after the stored expiry passed shows the buff missing. That encoded the false-alert
+-- bug (the buff may have been recast mid-fight), so a blocked read now holds the last known state;
+-- the timer-ran-out rule still applies to clean reads.
+T("Expiry vs blocked reads: blocked holds last state, clean read shows it gone", function()
     local BWm = sns.BuffWatch
     local list = env.SanctumCharDB.buffWatch.list
     list[1].alert = nil                       -- back to the bar
@@ -1690,9 +1693,65 @@ T("Expiry fallback: blocked read after the buff timed out shows it missing", fun
     local oldTime = env.GetTime
     env.GetTime = function() return 1011 end
     BWm.Update()
-    eq(BWm.icons[1].state.up, false, "timed out while reads were blocked")
+    eq(BWm.icons[1].state.up, true, "blocked read: held up, not a false missing")
+    eq(BWm.icons[1].state.stale, true, "time left is not trusted")
+    eq(BWm.flashing, false)
+    -- a clean read that still lists the buff with a passed expiry (the timer genuinely ran out)
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, filter) if filter == "HELPFUL" then return auras[i] end end }
+    BWm.Update()
+    eq(BWm.icons[1].state.up, false, "clean read + timer ran out: gone")
     eq(BWm.flashing, true)
     env.GetTime = oldTime
+end)
+
+-- Fix 1 (0.7.1 review): pure-logic checks for the blocked flag and the stale amber warning.
+T("BuffWatchState: blocked list holds an expired buff up; no amber warning from stale expiry", function()
+    local tracked = { { key = "Inner Fire", alert = "missing" } }
+    local old = { ["Inner Fire"] = { expirationTime = 1010 } }
+    -- expiry passed: clean read -> gone; blocked (helpful) -> held up with no trusted time left
+    eq(L.BuffWatchState(tracked, old, 1011)[1].up, false, "clean: gone")
+    local st = L.BuffWatchState(tracked, old, 1011, nil, nil, { helpful = true })[1]
+    eq(st.up, true, "blocked: held"); eq(st.remaining, nil); eq(st.stale, true)
+    eq(L.BuffWatchState(tracked, old, 1011, nil, nil, { harmful = true })[1].up, false, "other list blocked: no effect")
+    -- still ahead of expiry but inside the warning window: a blocked/estimated expiry must not warn
+    local near = { ["Inner Fire"] = { expirationTime = 1020 } }
+    local clean = L.BuffWatchState(tracked, near, 1000)
+    eq(L.AlertState(tracked, clean, 30)[1].level, "warn", "clean read warns")
+    local held = L.BuffWatchState(tracked, near, 1000, nil, nil, { helpful = true })
+    eq(#L.AlertState(tracked, held, 30), 0, "blocked: no amber warning from a stale expiry")
+    local est = L.BuffWatchState(tracked, { ["Inner Fire"] = { expirationTime = 1020, estimated = true } }, 1000)
+    eq(#L.AlertState(tracked, est, 30), 0, "secret-expiry estimate: no amber warning")
+    -- estimated expiry that has passed on a clean read: the buff is listed, so it is up
+    eq(L.BuffWatchState(tracked, { ["Inner Fire"] = { expirationTime = 1010, estimated = true } }, 1011)[1].up, true)
+    -- harmful list blocked
+    local dt = { { key = "Weakened Soul", harmful = true } }
+    eq(L.BuffWatchState(dt, {}, 1011, nil, { ["Weakened Soul"] = { expirationTime = 1010 } }, { harmful = true })[1].up, true)
+end)
+
+T("BuffWatch: recast mid-fight during blocked reads does not flash missing", function()
+    local BWm = sns.BuffWatch
+    env.SanctumCharDB.buffWatch.list = { { key = "Inner Fire", label = "Inner Fire", alert = "missing" } }
+    env.SanctumCharDB.buffWatch.panel.locked = true           -- hidden unless there is a live alert
+    local auras = { { name = "Inner Fire", icon = 1, expirationTime = 1010 } }
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, f) if f == "HELPFUL" then return auras[i] end end }
+    local oldTime = env.GetTime
+    BWm.Update()
+    env.C_UnitAuras = { GetAuraDataByIndex = function() error("Auras cannot be accessed when secret") end }
+    env.GetTime = function() return 1015 end                -- old expiry has passed, reads blocked
+    BWm.Update()
+    eq(BWm.panel:IsShown(), false, "no false missing alert")
+    -- a secret expiry on a clean read: estimate flagged, never compared
+    auras = { { name = "Inner Fire", icon = 1, expirationTime = env.secret(1) } }
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, f) if f == "HELPFUL" then return auras[i] end end }
+    BWm.lastAuras = { ["Inner Fire"] = { expirationTime = 1020 } }
+    env.GetTime = function() return 1000 end
+    eq(BWm.ReadAuras()["Inner Fire"].estimated, true)
+    BWm.Update()
+    eq(BWm.panel:IsShown(), false, "secret-expiry refresh: no amber warning from the old expiry")
+    env.GetTime = oldTime
+    env.C_UnitAuras = nil
+    env.SanctumCharDB.buffWatch.list = {}
+    BWm.Update()
 end)
 
 -- SM4: debuffs on you: offered, default 'Panel: on', flash while present
@@ -1902,7 +1961,8 @@ T("BuffWatch: SetTracked refuses a 9th entry and prints the full message", funct
     local out, restore = capturePrint(env)
     BWm.SetTracked({ key = "Extra", label = "Extra Buff" }, true)
     eq(#out, 1, "exactly one message")
-    eq(out[1], "|cff66ccffSanctum|r: buff watch is full (8 entries): untick one before adding Extra Buff")
+    -- wording changed in 0.7.1: the cap is 8 BAR icons (panel entries no longer count towards it)
+    eq(out[1], "|cff66ccffSanctum|r: buff watch bar is full (8 bar icons): untick one or move one to the panel before adding Extra Buff")
     eq(#list, 8, "still 8")
     for _, t in ipairs(list) do assert(t.key ~= "Extra", "9th not added") end
     -- re-ticking something already tracked removes then re-adds it: not blocked, no message
@@ -1916,6 +1976,57 @@ T("BuffWatch: SetTracked refuses a 9th entry and prints the full message", funct
     eq(#list, 8); eq(list[8].key, "Extra")
     env.SanctumCharDB.buffWatch.list = {}
     BWm.Update()
+end)
+
+-- Fix 3 (0.7.1 review): the 8 cap counts bar entries only; panel entries have their own limit (12).
+T("BuffWatch: cap counts bar entries only; panel entries do not use up bar slots", function()
+    local BWm = sns.BuffWatch
+    env.SanctumCharDB.buffWatch.panel.locked = true
+    local list = {}
+    env.SanctumCharDB.buffWatch.list = list
+    for i = 1, 4 do list[i] = { key = "Bar" .. i, label = "Bar " .. i } end
+    for i = 1, 6 do list[#list + 1] = { key = "Pan" .. i, label = "Pan " .. i, alert = "missing" } end
+    local out, restore = capturePrint(env)
+    for i = 5, 8 do BWm.SetTracked({ key = "Bar" .. i, label = "Bar " .. i }, true) end
+    eq(#out, 0, "10 entries saved, but only 8 on the bar: 4 more bar adds fit"); eq(#list, 14)
+    BWm.SetTracked({ key = "Bar9", label = "Bar 9" }, true)
+    eq(#out, 1, "9th bar icon refused"); eq(#list, 14)
+    restore()
+    -- bar icons 1-8 are all drawn even though panel entries sit between them in the list
+    BWm.Update()
+    local shown = 0
+    for i, b in ipairs(BWm.icons) do if list[i] and not list[i].alert and b:IsShown() then shown = shown + 1 end end
+    eq(shown, 8, "all 8 bar entries drawn")
+    env.SanctumCharDB.buffWatch.list = {}
+    BWm.Update()
+end)
+
+T("BuffWatch: saved list over a limit prints a one-time warning in Init (WarnOverflow)", function()
+    local BWm = sns.BuffWatch
+    local list = {}
+    env.SanctumCharDB.buffWatch.list = list
+    for i = 1, 10 do list[i] = { key = "B" .. i } end
+    local out, restore = capturePrint(env)
+    BWm.WarnOverflow()
+    eq(#out, 1, "bar overflow warned once"); assert(out[1]:find("10 bar entries"), out[1])
+    eq(#list, 10, "nothing deleted")
+    for i = 1, 13 do list[#list + 1] = { key = "P" .. i, alert = "missing" } end
+    out[1] = nil; for k in pairs(out) do out[k] = nil end
+    BWm.WarnOverflow()
+    eq(#out, 2, "bar and panel overflow both reported")
+    for i = #list, 1, -1 do if i > 8 then table.remove(list, i) end end
+    for k in pairs(out) do out[k] = nil end
+    BWm.WarnOverflow(); eq(#out, 0, "within limits: silent")
+    restore()
+    env.SanctumCharDB.buffWatch.list = {}
+    BWm.Update()
+end)
+
+-- Fix 4 (0.7.1 review): the OnUpdate driver must not be parented to UIParent (Alt-Z hides it).
+T("BuffWatch: OnUpdate driver is not parented to UIParent", function()
+    local drv = sns.BuffWatch.driver
+    assert(drv and drv._scripts.OnUpdate, "driver exists with an OnUpdate")
+    assert(drv._parent ~= env.UIParent, "not a child of UIParent")
 end)
 
 -- H4: UNIT_AURA only flags the watcher; the next frame does one Update however many events came.
@@ -2219,6 +2330,27 @@ T("Goals: a flush that fires while still in combat does not snapshot, and is not
         h.combat = false
         fire("UNIT_AURA", "player"); h.run()   -- still dirty, so the next event refreshes
         eq(h.snaps, 1)
+    end)
+end)
+
+-- Fix 2 (0.7.1 review): item info arrives after the flush, so it is retried once per requested
+-- item ID per scan cycle; IDs the scan never asked for are ignored.
+T("Goals: GET_ITEM_INFO_RECEIVED only for requested IDs, one retry per ID per cycle", function()
+    goalsHarness(function(h)
+        fire("UNIT_AURA", "player"); h.run()                  -- a scan: records the requested IDs
+        local id = sns.Data.goals.consumables[1].tiers[1].id
+        assert(id, "a consumable id")
+        h.snaps = 0
+        fire("GET_ITEM_INFO_RECEIVED", 99999999, true)
+        eq(#h.timers, 0, "an ID the scan never asked for is ignored")
+        fire("GET_ITEM_INFO_RECEIVED", id, true)
+        eq(#h.timers, 1, "a requested ID triggers one retry"); h.run(); eq(h.snaps, 1)
+        fire("GET_ITEM_INFO_RECEIVED", id, false)
+        eq(#h.timers, 0, "same ID again in the same cycle: no second retry"); h.run(); eq(h.snaps, 1)
+        -- any other trigger starts a new cycle: one more retry is allowed
+        fire("UNIT_AURA", "player"); h.run(); eq(h.snaps, 2)
+        fire("GET_ITEM_INFO_RECEIVED", id, true)
+        eq(#h.timers, 1, "new cycle: one retry again"); h.run(); eq(h.snaps, 3)
     end)
 end)
 
