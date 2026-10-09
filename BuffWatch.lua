@@ -12,6 +12,9 @@ ns.BuffWatch = BW
 local D, L, C = ns.Data, ns.Logic, ns.C
 
 local GAP, MAX_ICONS = 3, 8
+-- Total tracked entries (bar + panel). At most MAX_ICONS fit on the bar, so with this cap no mode
+-- change can ever push an entry onto a bar that is already full (where it would be hidden).
+local MAX_TRACKED = 8
 local MENU_ROWS = 12
 local PSIZE_MIN, PSIZE_MAX, PGAP, PPAD, PMAX = 24, 96, 4, 6, 12
 local QMARK = "Interface\\Icons\\INV_Misc_QuestionMark"
@@ -208,7 +211,9 @@ function BW.SetTracked(row, on)
         if L.IsPanelEntry(t) then panel = panel + 1 else bar = bar + 1 end
     end
     local toPanel = L.IsPanelEntry({ harmful = row.harmful, alert = L.DefaultAlertMode(row.harmful) })
-    if on and not toPanel and bar >= MAX_ICONS then
+    if on and #list >= MAX_TRACKED then
+        ns.Print("buff watch is full (%d tracked): untick one before adding %s", MAX_TRACKED, row.label or row.key)
+    elseif on and not toPanel and bar >= MAX_ICONS then
         ns.Print("buff watch bar is full (%d bar icons): untick one or move one to the panel before adding %s",
                  MAX_ICONS, row.label or row.key)
     elseif on and toPanel and panel >= PMAX then
@@ -769,11 +774,17 @@ function BW.WarnOverflow()
     for _, t in ipairs(db().list) do
         if L.IsPanelEntry(t) then panel = panel + 1 else bar = bar + 1 end
     end
+    local warned = false
     if bar > MAX_ICONS then
         ns.Print("buff watch: %d bar entries saved but only %d icons are drawn; untick some or move them to the alert panel", bar, MAX_ICONS)
+        warned = true
     end
     if panel > PMAX then
         ns.Print("buff watch: %d alert panel entries saved but only %d are drawn; untick some", panel, PMAX)
+        warned = true
+    end
+    if not warned and bar + panel > MAX_TRACKED then
+        ns.Print("buff watch: %d buffs saved but the limit is %d; untick some (nothing was removed, but you cannot add more until you are under the limit)", bar + panel, MAX_TRACKED)
     end
 end
 

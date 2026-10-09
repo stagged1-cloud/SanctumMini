@@ -1961,8 +1961,8 @@ T("BuffWatch: SetTracked refuses a 9th entry and prints the full message", funct
     local out, restore = capturePrint(env)
     BWm.SetTracked({ key = "Extra", label = "Extra Buff" }, true)
     eq(#out, 1, "exactly one message")
-    -- wording changed in 0.7.1: the cap is 8 BAR icons (panel entries no longer count towards it)
-    eq(out[1], "|cff66ccffSanctum|r: buff watch bar is full (8 bar icons): untick one or move one to the panel before adding Extra Buff")
+    -- wording changed again: the cap is now 8 TRACKED buffs in total (bar + panel)
+    eq(out[1], "|cff66ccffSanctum|r: buff watch is full (8 tracked): untick one before adding Extra Buff")
     eq(#list, 8, "still 8")
     for _, t in ipairs(list) do assert(t.key ~= "Extra", "9th not added") end
     -- re-ticking something already tracked removes then re-adds it: not blocked, no message
@@ -1978,25 +1978,116 @@ T("BuffWatch: SetTracked refuses a 9th entry and prints the full message", funct
     BWm.Update()
 end)
 
--- Fix 3 (0.7.1 review): the 8 cap counts bar entries only; panel entries have their own limit (12).
-T("BuffWatch: cap counts bar entries only; panel entries do not use up bar slots", function()
+-- Fix 3 (superseded): the 8 cap is now TOTAL (bar + panel), so panel entries DO use up slots.
+T("BuffWatch: total cap counts panel entries too", function()
     local BWm = sns.BuffWatch
     env.SanctumCharDB.buffWatch.panel.locked = true
     local list = {}
     env.SanctumCharDB.buffWatch.list = list
     for i = 1, 4 do list[i] = { key = "Bar" .. i, label = "Bar " .. i } end
-    for i = 1, 6 do list[#list + 1] = { key = "Pan" .. i, label = "Pan " .. i, alert = "missing" } end
+    for i = 1, 4 do list[#list + 1] = { key = "Pan" .. i, label = "Pan " .. i, alert = "missing" } end
     local out, restore = capturePrint(env)
-    for i = 5, 8 do BWm.SetTracked({ key = "Bar" .. i, label = "Bar " .. i }, true) end
-    eq(#out, 0, "10 entries saved, but only 8 on the bar: 4 more bar adds fit"); eq(#list, 14)
-    BWm.SetTracked({ key = "Bar9", label = "Bar 9" }, true)
-    eq(#out, 1, "9th bar icon refused"); eq(#list, 14)
+    BWm.SetTracked({ key = "Bar5", label = "Bar 5" }, true)
+    eq(#out, 1, "9th entry refused even though only 4 are on the bar"); eq(#list, 8)
     restore()
-    -- bar icons 1-8 are all drawn even though panel entries sit between them in the list
+    env.SanctumCharDB.buffWatch.list = {}
     BWm.Update()
-    local shown = 0
-    for i, b in ipairs(BWm.icons) do if list[i] and not list[i].alert and b:IsShown() then shown = shown + 1 end end
-    eq(shown, 8, "all 8 bar entries drawn")
+end)
+
+-- Total cap T1: adding up to 8 tracked buffs works and prints nothing.
+T("BuffWatch total cap: adding up to 8 works silently", function()
+    local BWm = sns.BuffWatch
+    env.SanctumCharDB.buffWatch.list = {}
+    local list = env.SanctumCharDB.buffWatch.list
+    local out, restore = capturePrint(env)
+    for i = 1, 8 do BWm.SetTracked({ key = "Cap" .. i, label = "Cap " .. i }, true) end
+    restore()
+    eq(#out, 0, "no messages"); eq(#list, 8)
+    env.SanctumCharDB.buffWatch.list = {}
+    BWm.Update()
+end)
+
+-- Total cap T2: the 9th is refused with the full message and the list is unchanged.
+T("BuffWatch total cap: 9th add refused with a message", function()
+    local BWm = sns.BuffWatch
+    env.SanctumCharDB.buffWatch.list = {}
+    local list = env.SanctumCharDB.buffWatch.list
+    for i = 1, 8 do BWm.SetTracked({ key = "Cap" .. i, label = "Cap " .. i }, true) end
+    local out, restore = capturePrint(env)
+    BWm.SetTracked({ key = "Cap9", label = "Cap 9" }, true)
+    restore()
+    eq(#out, 1); assert(out[1]:find("buff watch is full %(8 tracked%)"), out[1])
+    eq(#list, 8)
+    for _, t in ipairs(list) do assert(t.key ~= "Cap9", "9th not added") end
+    env.SanctumCharDB.buffWatch.list = {}
+    BWm.Update()
+end)
+
+-- Total cap T3: removing one frees a slot; removing an untracked key is harmless.
+T("BuffWatch total cap: remove one then add works again", function()
+    local BWm = sns.BuffWatch
+    env.SanctumCharDB.buffWatch.list = {}
+    local list = env.SanctumCharDB.buffWatch.list
+    for i = 1, 8 do BWm.SetTracked({ key = "Cap" .. i, label = "Cap " .. i }, true) end
+    BWm.SetTracked({ key = "Cap4", label = "Cap 4" }, false)
+    eq(#list, 7)
+    local out, restore = capturePrint(env)
+    BWm.SetTracked({ key = "Cap9", label = "Cap 9" }, true)
+    restore()
+    eq(#out, 0); eq(#list, 8); eq(list[8].key, "Cap9")
+    env.SanctumCharDB.buffWatch.list = {}
+    BWm.Update()
+end)
+
+-- Total cap T4: an over-cap saved list (mixed bar/panel, 10 entries) is kept intact, warned about
+-- by the login warning, and no new buff can be added until it is back under the limit.
+T("BuffWatch total cap: over-cap saved list preserved, warned, adds blocked", function()
+    local BWm = sns.BuffWatch
+    local list = {}
+    env.SanctumCharDB.buffWatch.list = list
+    for i = 1, 5 do list[#list + 1] = { key = "B" .. i } end
+    for i = 1, 5 do list[#list + 1] = { key = "P" .. i, alert = "missing" } end
+    local out, restore = capturePrint(env)
+    BWm.WarnOverflow()
+    eq(#out, 1, "one warning (5 bar, 5 panel: neither per-place limit hit, total is)")
+    assert(out[1]:find("10 buffs saved") and out[1]:find("limit is 8"), out[1])
+    eq(#list, 10, "nothing deleted or truncated")
+    for k in pairs(out) do out[k] = nil end
+    BWm.SetTracked({ key = "New", label = "New" }, true)
+    eq(#out, 1, "add refused while over the cap"); eq(#list, 10)
+    -- ticking an already-tracked buff (remove + re-add) when over the cap is refused too, never grows the list
+    BWm.SetTracked({ key = "B1", label = "B1" }, false)
+    BWm.SetTracked({ key = "B2", label = "B2" }, false)
+    eq(#list, 8)
+    for k in pairs(out) do out[k] = nil end
+    BWm.WarnOverflow(); eq(#out, 0, "back at 8: silent")
+    restore()
+    env.SanctumCharDB.buffWatch.list = {}
+    BWm.Update()
+end)
+
+-- Total cap T5: with a full list of 8, cycling every entry's mode many times never puts more than
+-- 8 entries on the bar, and every bar entry stays drawn (none pushed past the icon limit).
+T("BuffWatch total cap: cycling modes never lands a buff on a full bar", function()
+    local BWm = sns.BuffWatch
+    env.SanctumCharDB.buffWatch.panel.locked = true
+    env.SanctumCharDB.buffWatch.list = {}
+    local list = env.SanctumCharDB.buffWatch.list
+    for i = 1, 8 do BWm.SetTracked({ key = "Cyc" .. i, label = "Cyc " .. i }, true) end
+    eq(#list, 8)
+    for round = 1, 7 do
+        for i = 1, 8 do
+            if (i + round) % 2 == 0 then BWm.CycleMode({ key = "Cyc" .. i }) end
+            local bar = 0
+            for _, t in ipairs(list) do if not L.IsPanelEntry(t) then bar = bar + 1 end end
+            assert(bar <= 8, "bar entries never exceed 8")
+        end
+    end
+    BWm.Update()
+    for i, t in ipairs(list) do
+        if not L.IsPanelEntry(t) then assert(BWm.icons[i], "bar entry " .. i .. " has an icon") end
+    end
+    eq(#list, 8, "cycling never changes the count")
     env.SanctumCharDB.buffWatch.list = {}
     BWm.Update()
 end)
