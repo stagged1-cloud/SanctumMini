@@ -2,7 +2,7 @@
 ## Title: Sanctum Mini
 ## Notes: Healer party frames with click-casting, a GSE-style sequence button and a per-level goals checklist. Built for WoW: Forever (levels 5-60).
 ## Author: Don Thompson
-## Version: 0.7.0
+## Version: 0.7.1
 ## SavedVariables: SanctumDB
 ## SavedVariablesPerCharacter: SanctumCharDB
 ## X-Curse-Project-ID: 1728928

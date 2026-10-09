@@ -179,11 +179,43 @@ function G.Refresh()
     G.Draw(sections, overall)
 end
 
-local pending = false
+-- Bursts of events (auras, item info, bags) collapse into one snapshot. A dirty
+-- flag records that a refresh is wanted; a single timer clears it. Nothing runs
+-- in combat: the flag stays set and PLAYER_REGEN_ENABLED refreshes once. Events
+-- raised during the refresh itself (item info arriving for the scan) are ignored
+-- so a snapshot cannot re-trigger itself.
+local QUEUE_DELAY = 0.75
+local dirty, timerSet, refreshing = false, false, false
+
+local function flush()
+    timerSet = false
+    if not dirty or InCombatLockdown() then return end
+    dirty = false
+    refreshing = true
+    local ok, err = pcall(G.Refresh)
+    refreshing = false
+    if not ok then error(err, 0) end
+end
+
+local function schedule()
+    if timerSet then return end
+    timerSet = true
+    C_Timer.After(QUEUE_DELAY, flush)
+end
+
 function G.Queue()
-    if pending or not G.ready then return end
-    pending = true
-    C_Timer.After(0.5, function() pending = false; G.Refresh() end)
+    if not G.ready or refreshing then return end
+    dirty = true
+    if InCombatLockdown() then return end
+    schedule()
+end
+
+-- Combat just ended: refresh once. InCombatLockdown may still read true on the
+-- event itself, so the delayed flush (not this call) does the check.
+function G.OnCombatEnd()
+    if not G.ready then return end
+    dirty = true
+    schedule()
 end
 
 -- Single place that shows or hides the panel, so the saved setting, the panel
@@ -240,10 +272,11 @@ function G.Init()
     f:SetScript("OnShow", function() G.Refresh() end)
 
     for _, e in ipairs({ "PLAYER_EQUIPMENT_CHANGED", "BAG_UPDATE_DELAYED", "PLAYER_LEVEL_UP",
-                         "UPDATE_INVENTORY_DURABILITY", "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED",
+                         "UPDATE_INVENTORY_DURABILITY", "PLAYER_REGEN_DISABLED",
                          "PLAYER_ENTERING_WORLD", "GET_ITEM_INFO_RECEIVED", "ZONE_CHANGED_NEW_AREA" }) do
         ns.On(e, G.Queue)
     end
+    ns.On("PLAYER_REGEN_ENABLED", G.OnCombatEnd)
     ns.On("UNIT_AURA", function(_, unit) if unit == "player" then G.Queue() end end)
     ns.On("TRAINER_SHOW", G.ScanTrainer)
     ns.On("TRAINER_UPDATE", G.ScanTrainer)

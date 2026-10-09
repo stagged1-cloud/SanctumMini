@@ -2,7 +2,13 @@
 -- Namespace, saved variables, API compat shims, event bus, combat queue, slash commands.
 
 local ADDON, ns = ...
-ns.version = "0.6.0"
+-- Read from the TOC so the login message can't drift; "0.7.1" if the API is missing.
+local getMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+ns.version = "0.7.1"
+if getMeta then
+    local ok, v = pcall(getMeta, ADDON, "Version")
+    if ok and type(v) == "string" and v ~= "" then ns.version = v end
+end
 ns.Data = ns.Data or {}
 ns.Logic = ns.Logic or {}
 
@@ -215,7 +221,7 @@ local function applyDefaults(dst, src)
         if type(v) == "table" then
             if type(dst[k]) ~= "table" then dst[k] = {} end
             applyDefaults(dst[k], v)
-        elseif dst[k] == nil then
+        elseif type(dst[k]) ~= type(v) then   -- nil or corrupt (wrong type) falls back to the default
             dst[k] = v
         end
     end
@@ -233,15 +239,27 @@ function ns.ClassKit(class)
     return ns.Data.classKits[class] or ns.Data.classKits.DEFAULT
 end
 
+-- Ordered SavedVariables migrations; SanctumDB.dbVersion is the number of steps already run.
+local migrations = {
+    -- 1 (0.5.1): enchant checks start at 15 (was 40) now that they name the enchant to get.
+    function(db)
+        if db.goals.enchantFromLevel > 15 then db.goals.enchantFromLevel = 15 end
+        db.goals.enchant15 = true   -- legacy flag, still set for old readers
+    end,
+}
+
 local function initDB()
-    SanctumDB = SanctumDB or {}
+    if type(SanctumDB) ~= "table" then SanctumDB = {} end
     applyDefaults(SanctumDB, defaults)
-    -- 0.5.1: enchant checks start at 15 (was 40) now that they name the enchant to get. Once only.
-    if not SanctumDB.goals.enchant15 then
-        if SanctumDB.goals.enchantFromLevel > 15 then SanctumDB.goals.enchantFromLevel = 15 end
-        SanctumDB.goals.enchant15 = true
+    -- Pre-dbVersion saves: the old enchant15 flag means step 1 already ran.
+    if type(SanctumDB.dbVersion) ~= "number" then
+        SanctumDB.dbVersion = SanctumDB.goals.enchant15 and 1 or 0
     end
-    SanctumCharDB = SanctumCharDB or {}
+    for i = SanctumDB.dbVersion + 1, #migrations do
+        migrations[i](SanctumDB)
+        SanctumDB.dbVersion = i
+    end
+    if type(SanctumCharDB) ~= "table" then SanctumCharDB = {} end
     local _, class = UnitClass("player")
     ns.class = class
     if type(SanctumCharDB.bindings) ~= "table" then SanctumCharDB.bindings = copy(ns.ClassKit(class)) end
@@ -287,20 +305,56 @@ end
 ---------------------------------------------------------------------------
 local ev = CreateFrame("Frame")
 ns.handlers = {}
+local registered = {}   -- events already registered on ev
+
+-- One handler error must not skip the rest. The first occurrence of each distinct error is
+-- forwarded to geterrorhandler() (scriptErrors / BugSack) and printed once in chat.
+-- The dedupe key has addresses and digit runs stripped so changing values can't defeat it.
+local seenErrors, seenCount = {}, 0
+local SEEN_CAP = 50
+local function safecall(fn, ...)
+    local ok, err = pcall(fn, ...)
+    if not ok then
+        err = tostring(err)
+        local key = err:gsub("0x%x+", "0x"):gsub("%d+", "#")
+        if not seenErrors[key] then
+            if seenCount >= SEEN_CAP then seenErrors, seenCount = {}, 0 end
+            seenErrors[key] = true
+            seenCount = seenCount + 1
+            local geh = geterrorhandler
+            if type(geh) == "function" then
+                pcall(function()
+                    local h = geh()
+                    if type(h) == "function" then h(err) end
+                end)
+            end
+            ns.Print("|cffff4040error:|r %s", err)
+        end
+    end
+end
+
 function ns.On(event, fn)
-    if not ns.handlers[event] then
-        ns.handlers[event] = {}
+    if not registered[event] then
+        registered[event] = true
         pcall(ev.RegisterEvent, ev, event)
     end
+    ns.handlers[event] = ns.handlers[event] or {}
     table.insert(ns.handlers[event], fn)
 end
 ev:SetScript("OnEvent", function(_, event, ...)
     local list = ns.handlers[event]
-    if list then for _, fn in ipairs(list) do fn(event, ...) end end
+    if list then
+        for _, fn in ipairs(list) do
+            safecall(fn, event, ...)
+        end
+    end
 end)
 
 ns.On("PLAYER_REGEN_ENABLED", function()
-    for k, fn in pairs(queue) do queue[k] = nil; fn() end
+    -- Swap first: fn() may call RunOOC and re-queue mid-iteration.
+    local q = queue
+    queue = {}
+    for _, fn in pairs(q) do safecall(fn) end
 end)
 
 ns.On("ADDON_LOADED", function(_, name)

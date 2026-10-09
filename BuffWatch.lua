@@ -31,10 +31,18 @@ function BW.BarSize() return L.ClampBuffIconSize(ns.cdb.buffWatch.barSize) end
 function BW.ReadAuras(filter)
     local before = C.auraBlocked or 0
     local auras = {}
+    local prev = (filter == "HARMFUL" and BW.lastHarmful or BW.lastAuras) or {}
     C.ForEachAura("player", filter or "HELPFUL", function(a)
-        if a.name and not issecret(a.name) then
+        if issecret(a.name) then
+            -- A secret name cannot be matched, so the list is incomplete: count it as blocked.
+            C.auraBlocked = (C.auraBlocked or 0) + 1
+        elseif a.name then
             local exp = a.expirationTime
-            if issecret(exp) then exp = nil end
+            if issecret(exp) then
+                -- Unknown expiry: keep the last known one while it is still ahead, else none.
+                local old = prev[a.name] and prev[a.name].expirationTime
+                exp = (old and old > GetTime()) and old or nil
+            end
             local icon = a.icon
             if issecret(icon) then icon = nil end
             auras[a.name] = { icon = icon, expirationTime = exp }
@@ -151,7 +159,8 @@ end
 local function onUpdate(_, elapsed)
     BW.t = (BW.t or 0) + elapsed
     BW.acc = (BW.acc or 0) + elapsed
-    if BW.acc >= 0.5 then BW.acc = 0; BW.Update() end   -- timers tick down, imbues expire
+    -- UNIT_AURA only sets BW.dirty, so a burst of events costs one Update per frame.
+    if BW.dirty or BW.acc >= 0.5 then BW.acc = 0; BW.dirty = false; BW.Update() end   -- timers tick down, imbues expire
     BW.PanelTick(elapsed)
     if not BW.flashing then return end
     local a = 0.3 + 0.7 * math.abs(math.sin(BW.t * 4))
@@ -184,7 +193,9 @@ local function sameKind(a, b) return (a.harmful and true or false) == (b.harmful
 function BW.SetTracked(row, on)
     local list = db().list
     for i = #list, 1, -1 do if list[i].key == row.key and sameKind(list[i], row) then table.remove(list, i) end end
-    if on then
+    if on and #list >= MAX_ICONS then
+        ns.Print("buff watch is full (%d entries): untick one before adding %s", MAX_ICONS, row.label or row.key)
+    elseif on then
         list[#list + 1] = { key = row.key, label = row.label, accept = row.accept, weapon = row.weapon,
                             harmful = row.harmful, alert = L.DefaultAlertMode(row.harmful),
                             icon = row.icon or C.GetSpellIcon((row.accept and row.accept[1]) or row.key) }
@@ -755,7 +766,7 @@ function BW.Init()
         end
     end
     BW.Place()
-    ns.On("UNIT_AURA", function(_, unit) if unit == "player" then BW.Update() end end)
+    ns.On("UNIT_AURA", function(_, unit) if unit == "player" then BW.dirty = true end end)
     for _, e in ipairs({ "PLAYER_ENTERING_WORLD", "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
                          "UNIT_INVENTORY_CHANGED", "PLAYER_REGEN_ENABLED" }) do
         ns.On(e, function() BW.Update() end)

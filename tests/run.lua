@@ -1130,6 +1130,14 @@ end)
 local function fire(event, ...)
     for _, fn in ipairs(sns.handlers[event] or {}) do fn(event, ...) end
 end
+-- BuffWatch (0.7.1+) only sets BW.dirty on UNIT_AURA and updates on its next OnUpdate frame.
+-- fireAura = fire the event, then run that one frame tick (0.01 s: well under the 0.5 s timer,
+-- so only the dirty flag can cause an Update).
+local function tickBW(dt)
+    local drv = sns.BuffWatch and sns.BuffWatch.driver
+    if drv then drv._scripts.OnUpdate(drv, dt or 0.01) end
+end
+local function fireAura(unit) fire("UNIT_AURA", unit); tickBW() end
 env.SanctumDB = { goals = { enchantFromLevel = 20 } }   -- a 0.5.0 user who had set 20
 T("ADDON_LOADED creates saved vars with priest kit", function()
     fire("ADDON_LOADED", "Sanctum")
@@ -1522,13 +1530,13 @@ T("Buff watch: pick from dropdown, icon shows, flashes when missing", function()
     eq(BWm.flashing, false)
     -- it falls off -> missing, flashing
     auras = {}
-    fire("UNIT_AURA", "player")
+    fireAura("player")
     eq(icon.state.up, false); eq(BWm.flashing, true); eq(icon.time:GetText(), "")
     -- party aura events never touch it
     auras = { { name = "Inner Fire", icon = 135926, expirationTime = 1600.25 } }
-    fire("UNIT_AURA", "party1")
+    fireAura("party1")
     eq(icon.state.up, false, "party1 aura ignored")
-    fire("UNIT_AURA", "player")
+    fireAura("player")
     eq(icon.state.up, true)
     -- hide while up
     env.SanctumCharDB.buffWatch.hideWhileUp = true
@@ -1643,22 +1651,22 @@ T("Alert panel: buff on 'Panel: gone' flashes red when it falls off, one sound",
     -- it falls off
     env._sounds = {}
     auras = {}
-    fire("UNIT_AURA", "player")
+    fireAura("player")
     eq(BWm.panel:IsShown(), true, "pops up")
     local icon = BWm.panel.icons[1]
     eq(icon.alert.level, "alert"); eq(icon.glow:IsShown(), true); eq(BWm.panel.flashing, true)
     eq(#env._sounds, 1); eq(env._sounds[1], "Interface\\AddOns\\SanctumMini\\Sounds\\SadTrombone.ogg")
     BWm.PanelTick(0.1)   -- pulse runs without error
-    fire("UNIT_AURA", "player")
+    fireAura("player")
     eq(#env._sounds, 1, "no repeat while still missing")
     -- recast with 20s left: amber warning inside the 30s window, no flash, no sound
     auras = { { name = "Inner Fire", icon = 135926, expirationTime = 1020.25 } }
-    fire("UNIT_AURA", "player")
+    fireAura("player")
     eq(BWm.panel:IsShown(), true); eq(icon.alert.level, "warn"); eq(icon.time:GetText(), "20s")
     eq(icon.glow:IsShown(), false); eq(BWm.panel.flashing, false); eq(#env._sounds, 1)
     -- full duration: hidden again
     auras = { { name = "Inner Fire", icon = 135926, expirationTime = 1600.25 } }
-    fire("UNIT_AURA", "player")
+    fireAura("player")
     eq(BWm.panel:IsShown(), false)
     -- dead: hidden even if missing
     auras = {}
@@ -1708,7 +1716,7 @@ T("Debuff watch: Weakened Soul offered, flashes while on you", function()
     env._sounds = {}
     BWm.lastSound = nil   -- the mock clock never moves; clear the 2 s sound throttle
     harm = { { name = "Weakened Soul", icon = 136193, expirationTime = 1015.25 } }
-    fire("UNIT_AURA", "player")
+    fireAura("player")
     eq(BWm.panel:IsShown(), true); eq(BWm.panel.icons[1].alert.level, "alert"); eq(#env._sounds, 1)
     -- flip to 'Panel: gone' (vice versa)
     row = findRow(m, "Weakened Soul", true)
@@ -1716,10 +1724,10 @@ T("Debuff watch: Weakened Soul offered, flashes while on you", function()
     eq(e.alert, "missing")
     eq(BWm.panel.icons[1].alert.level, "warn", "on you with 15s left: amber, about to drop")
     harm = { { name = "Weakened Soul", icon = 136193, expirationTime = 1100.25 } }
-    fire("UNIT_AURA", "player")
+    fireAura("player")
     eq(BWm.panel:IsShown(), false, "on you with plenty left: hidden")
     harm = {}
-    fire("UNIT_AURA", "player")
+    fireAura("player")
     eq(BWm.panel:IsShown(), true)
     row = findRow(m, "Weakened Soul", true)
     row:SetChecked(false); row:GetScript("OnClick")(row)
@@ -1807,6 +1815,454 @@ T("/sanc alert lock/unlock/reset and resize grip limits", function()
     env.SlashCmdList.SANCTUM("alert lock"); eq(p.locked, true)
     env.SlashCmdList.SANCTUM("alert nonsense")   -- prints help, no error
     env.C_UnitAuras = nil
+end)
+
+---------------------------------------------------------------------------
+-- Helpers for the hardening tests below
+---------------------------------------------------------------------------
+-- Capture everything ns.Print writes (it goes through the env's global print). Returns the
+-- list and a restore function.
+local function capturePrint(e)
+    local out, old = {}, e.print
+    e.print = function(s) out[#out + 1] = tostring(s) end
+    return out, function() e.print = old end
+end
+local function countMatching(list, plain)
+    local n = 0
+    for _, s in ipairs(list) do if s:find(plain, 1, true) then n = n + 1 end end
+    return n
+end
+-- A second, independent copy of Core (+Data/Logic) in its own mocked env, for tests that need a
+-- clean namespace: version lookup and saved-variable initialisation.
+local function freshCore(setup)
+    local e = mockEnv()
+    if setup then setup(e) end
+    local n = {}
+    for _, f in ipairs({ "Core.lua", "Data.lua", "TalentData.lua", "Logic.lua" }) do
+        local chunk = assert(loadfile(f)); setfenv(chunk, e); chunk("Sanctum", n)
+    end
+    return e, n
+end
+local function fireIn(n, event, ...)
+    for _, fn in ipairs(n.handlers[event] or {}) do fn(event, ...) end
+end
+
+print("== Hardening: BuffWatch secrets, cap and update batching")
+-- H1: a secret aura NAME cannot be matched, so the read is incomplete: nil + blocked counter,
+-- and Update keeps the last good list instead of flashing everything as missing.
+T("BuffWatch: secret aura name -> ReadAuras nil, auraBlocked +1, lastAuras kept", function()
+    local BWm, C = sns.BuffWatch, sns.C
+    env.SanctumCharDB.buffWatch.list = { { key = "Inner Fire", label = "Inner Fire" } }
+    local auras = { { name = "Inner Fire", icon = 1, expirationTime = 1600.25 } }
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, f) if f == "HELPFUL" then return auras[i] end end }
+    BWm.Update()
+    local good = BWm.lastAuras
+    assert(good and good["Inner Fire"], "good read stored")
+    eq(BWm.icons[1].state.up, true)
+    auras = { { name = env.secret("Inner Fire"), icon = 1, expirationTime = 1600.25 } }
+    local before = C.auraBlocked or 0
+    eq(BWm.ReadAuras(), nil, "incomplete read returns nil")
+    eq(C.auraBlocked, before + 1, "counted as blocked")
+    BWm.Update()
+    assert(BWm.lastAuras == good, "lastAuras untouched by a blocked read")
+    eq(BWm.icons[1].state.up, true, "buff still shown as up, not flashing missing")
+    env.C_UnitAuras = nil
+end)
+
+-- H2: a secret expirationTime is never compared (the mock's secret raises on any comparison or
+-- arithmetic). The last known expiry is kept while still in the future, else dropped.
+T("BuffWatch: secret expirationTime is never compared", function()
+    local BWm = sns.BuffWatch
+    local auras = { { name = "Inner Fire", icon = 1, expirationTime = 1600.25 } }
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, f) if f == "HELPFUL" then return auras[i] end end }
+    BWm.Update()
+    auras = { { name = "Inner Fire", icon = 1, expirationTime = env.secret(1) } }
+    local r = BWm.ReadAuras()
+    assert(r, "read succeeds")
+    eq(r["Inner Fire"].expirationTime, 1600.25, "previous future expiry kept")
+    assert(not env.issecretvalue(r["Inner Fire"].expirationTime), "the secret itself is never stored")
+    BWm.lastAuras["Inner Fire"].expirationTime = 900          -- GetTime() is 1000.25: already expired
+    eq(BWm.ReadAuras()["Inner Fire"].expirationTime, nil, "stale previous expiry dropped")
+    BWm.lastAuras = nil                                        -- no history at all
+    eq(BWm.ReadAuras()["Inner Fire"].expirationTime, nil, "no history -> no expiry")
+    BWm.Update()                                               -- full update path: no error, buff up
+    eq(BWm.icons[1].state.up, true)
+    -- a secret ICON is also dropped quietly
+    auras = { { name = "Inner Fire", icon = env.secret(5), expirationTime = 1600.25 } }
+    eq(BWm.ReadAuras()["Inner Fire"].icon, nil)
+    env.C_UnitAuras = nil
+end)
+
+-- H3: the bar holds at most 8 entries; a 9th is refused with a visible message.
+T("BuffWatch: SetTracked refuses a 9th entry and prints the full message", function()
+    local BWm = sns.BuffWatch
+    env.SanctumCharDB.buffWatch.list = {}
+    local list = env.SanctumCharDB.buffWatch.list
+    for i = 1, 8 do list[i] = { key = "Buff" .. i, label = "Buff " .. i } end
+    local out, restore = capturePrint(env)
+    BWm.SetTracked({ key = "Extra", label = "Extra Buff" }, true)
+    eq(#out, 1, "exactly one message")
+    eq(out[1], "|cff66ccffSanctum|r: buff watch is full (8 entries): untick one before adding Extra Buff")
+    eq(#list, 8, "still 8")
+    for _, t in ipairs(list) do assert(t.key ~= "Extra", "9th not added") end
+    -- re-ticking something already tracked removes then re-adds it: not blocked, no message
+    BWm.SetTracked({ key = "Buff1", label = "Buff 1" }, true)
+    eq(#out, 1, "no new message"); eq(#list, 8)
+    -- untick one, and the new one fits
+    BWm.SetTracked({ key = "Buff3", label = "Buff 3" }, false)
+    eq(#list, 7)
+    BWm.SetTracked({ key = "Extra", label = "Extra Buff" }, true)
+    restore()
+    eq(#list, 8); eq(list[8].key, "Extra")
+    env.SanctumCharDB.buffWatch.list = {}
+    BWm.Update()
+end)
+
+-- H4: UNIT_AURA only flags the watcher; the next frame does one Update however many events came.
+T("BuffWatch: a burst of UNIT_AURA gives one BW.Update", function()
+    local BWm = sns.BuffWatch
+    local calls, orig = 0, BWm.Update
+    BWm.Update = function(...) calls = calls + 1; return orig(...) end
+    BWm.dirty = false; BWm.acc = 0
+    for _ = 1, 25 do fire("UNIT_AURA", "player") end
+    eq(calls, 0, "the events themselves update nothing"); eq(BWm.dirty, true)
+    tickBW(0.01)
+    eq(calls, 1, "one Update for 25 events"); eq(BWm.dirty, false)
+    tickBW(0.01)
+    eq(calls, 1, "next frame: nothing pending, timer not due")
+    -- other units never set the flag
+    fire("UNIT_AURA", "party1"); fire("UNIT_AURA", "target")
+    eq(BWm.dirty, false); tickBW(0.01); eq(calls, 1)
+    -- the 0.5 s heartbeat still runs without any event (timers tick down)
+    tickBW(0.6); eq(calls, 2)
+    BWm.Update = orig
+end)
+
+print("== Hardening: Core event bus, combat queue, unit events, version")
+-- H5: handler isolation. Dispatched through the real OnEvent script (the fire() helper bypasses it).
+T("Core: a throwing handler does not stop the others; error prints once", function()
+    local order = {}
+    sns.On("SANC_T_ERR", function() order[#order + 1] = "first" end)
+    sns.On("SANC_T_ERR", function() error("sanc-test-boom", 0) end)
+    sns.On("SANC_T_ERR", function() order[#order + 1] = "third" end)
+    local ev = env._events["SANC_T_ERR"]
+    assert(ev and ev._scripts.OnEvent, "event frame found")
+    local out, restore = capturePrint(env)
+    ev._scripts.OnEvent(ev, "SANC_T_ERR")
+    ev._scripts.OnEvent(ev, "SANC_T_ERR")
+    restore()
+    eq(table.concat(order, ","), "first,third,first,third", "handlers around the thrower ran both times")
+    eq(countMatching(out, "sanc-test-boom"), 1, "same error printed once, not per event")
+end)
+-- safecall forwards the first occurrence of each distinct error to geterrorhandler().
+local function dispatch(name)
+    local ev = env._events[name]
+    assert(ev and ev._scripts.OnEvent, "event frame found")
+    ev._scripts.OnEvent(ev, name)
+end
+T("Core: first occurrence of an error is forwarded to geterrorhandler once", function()
+    local old, got = env.geterrorhandler, {}
+    env.geterrorhandler = function() return function(e) got[#got + 1] = e end end
+    sns.On("SANC_T_GEH", function() error("sanc-test-geh", 0) end)
+    local out, restore = capturePrint(env)
+    dispatch("SANC_T_GEH"); dispatch("SANC_T_GEH"); dispatch("SANC_T_GEH")
+    restore(); env.geterrorhandler = old
+    eq(#got, 1, "forwarded once"); eq(got[1], "sanc-test-geh")
+    eq(countMatching(out, "sanc-test-geh"), 1, "chat line once")
+end)
+T("Core: a broken or missing geterrorhandler never breaks dispatch", function()
+    local old = env.geterrorhandler
+    local ran = 0
+    sns.On("SANC_T_GEH2", function() error("sanc-test-geh2", 0) end)
+    sns.On("SANC_T_GEH2", function() ran = ran + 1 end)
+    env.geterrorhandler = function() error("handler lookup exploded") end
+    dispatch("SANC_T_GEH2")
+    env.geterrorhandler = "not a function"
+    sns.On("SANC_T_GEH3", function() error("sanc-test-geh3", 0) end)
+    dispatch("SANC_T_GEH3")
+    env.geterrorhandler = nil
+    sns.On("SANC_T_GEH4", function() error("sanc-test-geh4", 0) end)
+    dispatch("SANC_T_GEH4")
+    env.geterrorhandler = old
+    eq(ran, 1, "other handler still ran")
+end)
+T("Core: errors differing only in addresses/numbers dedupe to one", function()
+    local old, got = env.geterrorhandler, {}
+    env.geterrorhandler = function() return function(e) got[#got + 1] = e end end
+    local n = 0
+    sns.On("SANC_T_DEDUPE", function() n = n + 1; error(("sanc-dedupe table: 0x%x value %d"):format(0x1000 + n * 7, n * 31), 0) end)
+    local out, restore = capturePrint(env)
+    for _ = 1, 5 do dispatch("SANC_T_DEDUPE") end
+    restore(); env.geterrorhandler = old
+    eq(#got, 1, "one forward for five varying messages")
+    eq(countMatching(out, "sanc-dedupe"), 1, "one chat line")
+end)
+T("Core: seen-errors table is capped (old errors can report again after the reset)", function()
+    local old, got = env.geterrorhandler, {}
+    env.geterrorhandler = function() return function(e) got[#got + 1] = e end end
+    local msg = "sanc-cap-first"
+    sns.On("SANC_T_CAP", function() error(msg, 0) end)
+    dispatch("SANC_T_CAP"); dispatch("SANC_T_CAP")
+    eq(#got, 1)
+    for i = 1, 60 do                       -- 60 distinct (non-digit) messages blow past the cap
+        local letters = ""
+        for c = 1, 4 do letters = letters .. string.char(97 + (i * 7 + c * 3) % 26) end
+        msg = "sanc-cap-" .. letters .. string.rep("z", i)
+        dispatch("SANC_T_CAP")
+    end
+    msg = "sanc-cap-first"
+    local before = #got
+    dispatch("SANC_T_CAP")
+    env.geterrorhandler = old
+    eq(#got, before + 1, "first message reported again after the table was reset")
+    assert(before <= 62, "forwards bounded by distinct messages")
+end)
+
+-- H6: the combat queue. Combat stays "true" during the flush (the event can fire before the
+-- lockdown flag clears), so a fn that re-queues must land in the NEXT flush, not be lost or loop.
+T("Core: OOC queue flush survives a throwing fn and re-queueing", function()
+    local inCombat, oldIC = true, env.InCombatLockdown
+    env.InCombatLockdown = function() return inCombat end
+    local ran = {}
+    sns.RunOOC("sanc_t_a", function() error("sanc-test-ooc", 0) end)
+    sns.RunOOC("sanc_t_b", function()
+        ran.b = (ran.b or 0) + 1
+        sns.RunOOC("sanc_t_c", function() ran.c = (ran.c or 0) + 1 end)   -- re-queued mid-flush
+    end)
+    sns.RunOOC("sanc_t_d", function() ran.d = true end)
+    eq(ran.b, nil, "nothing runs in combat")
+    local out, restore = capturePrint(env)
+    fire("PLAYER_REGEN_ENABLED")
+    eq(ran.b, 1, "fn after/before the thrower ran"); eq(ran.d, true)
+    eq(ran.c, nil, "re-queued fn waits for the next flush")
+    eq(countMatching(out, "sanc-test-ooc"), 1, "thrower reported once")
+    fire("PLAYER_REGEN_ENABLED")
+    restore()
+    env.InCombatLockdown = oldIC
+    eq(ran.c, 1, "re-queued fn ran on the next flush")
+    eq(ran.b, 1, "flushed entries are not run twice")
+    eq(countMatching(out, "sanc-test-ooc"), 1, "thrower not retried")
+end)
+T("Core: RunOOC runs immediately out of combat and returns true", function()
+    local hit = 0
+    eq(sns.RunOOC("sanc_t_now", function() hit = hit + 1 end), true)
+    eq(hit, 1)
+    local oldIC = env.InCombatLockdown
+    env.InCombatLockdown = function() return true end
+    eq(sns.RunOOC("sanc_t_later", function() hit = hit + 10 end), false)
+    -- same key twice: the later fn replaces the earlier (only the newest request matters)
+    sns.RunOOC("sanc_t_later", function() hit = hit + 100 end)
+    env.InCombatLockdown = oldIC
+    fire("PLAYER_REGEN_ENABLED")
+    eq(hit, 101, "latest fn for a key wins")
+end)
+
+-- H8: version string comes from the TOC via GetAddOnMetadata, with a hard-coded fallback.
+T("Core: version read from mocked GetAddOnMetadata", function()
+    local asked
+    local _, n = freshCore(function(e)
+        e.GetAddOnMetadata = function(addon, field) asked = addon .. "/" .. field; return "9.8.7" end
+    end)
+    eq(n.version, "9.8.7"); eq(asked, "Sanctum/Version")
+    -- C_AddOns variant wins over the legacy global when both exist
+    _, n = freshCore(function(e)
+        e.C_AddOns = { GetAddOnMetadata = function() return "5.5.5" end }
+        e.GetAddOnMetadata = function() return "1.1.1" end
+    end)
+    eq(n.version, "5.5.5")
+end)
+local FALLBACK = "0.7.1"   -- single constant: must match the fallback in Core.lua
+T("Core: version falls back to " .. FALLBACK .. " (no API, error, empty, wrong type)", function()
+    local _, n = freshCore()
+    eq(n.version, FALLBACK, "API missing")
+    _, n = freshCore(function(e) e.GetAddOnMetadata = function() error("boom") end end)
+    eq(n.version, FALLBACK, "API throws")
+    _, n = freshCore(function(e) e.GetAddOnMetadata = function() return "" end end)
+    eq(n.version, FALLBACK, "empty string")
+    _, n = freshCore(function(e) e.GetAddOnMetadata = function() return nil end end)
+    eq(n.version, FALLBACK, "nil")
+    _, n = freshCore(function(e) e.GetAddOnMetadata = function() return 7 end end)
+    eq(n.version, FALLBACK, "number")
+end)
+
+print("== Hardening: saved variables")
+-- H9: dbVersion migrations
+T("SavedVars: legacy DB with enchant15 and no dbVersion is not migrated twice", function()
+    local e, n = freshCore(function(e) e.SanctumDB = { goals = { enchantFromLevel = 40, enchant15 = true } } end)
+    fireIn(n, "ADDON_LOADED", "Sanctum")
+    eq(e.SanctumDB.dbVersion, 1)
+    eq(e.SanctumDB.goals.enchantFromLevel, 40, "the user's own 40 survives: step 1 already ran")
+    fireIn(n, "ADDON_LOADED", "Sanctum")          -- second load changes nothing
+    eq(e.SanctumDB.dbVersion, 1); eq(e.SanctumDB.goals.enchantFromLevel, 40)
+end)
+T("SavedVars: legacy DB without enchant15 migrates once to dbVersion 1", function()
+    local e, n = freshCore(function(e) e.SanctumDB = { goals = { enchantFromLevel = 40 } } end)
+    fireIn(n, "ADDON_LOADED", "Sanctum")
+    eq(e.SanctumDB.dbVersion, 1); eq(e.SanctumDB.goals.enchantFromLevel, 15); eq(e.SanctumDB.goals.enchant15, true)
+    e.SanctumDB.goals.enchantFromLevel = 33       -- user changes it afterwards
+    fireIn(n, "ADDON_LOADED", "Sanctum")
+    eq(e.SanctumDB.goals.enchantFromLevel, 33, "not clobbered on the next login")
+end)
+T("SavedVars: brand-new install ends at dbVersion 1; wrong-typed dbVersion is re-derived", function()
+    local e, n = freshCore()
+    fireIn(n, "ADDON_LOADED", "Sanctum")
+    eq(e.SanctumDB.dbVersion, 1); eq(e.SanctumDB.goals.enchantFromLevel, 15)
+    e, n = freshCore(function(e) e.SanctumDB = { dbVersion = "1", goals = { enchantFromLevel = 40, enchant15 = true } } end)
+    fireIn(n, "ADDON_LOADED", "Sanctum")
+    eq(e.SanctumDB.dbVersion, 1, "string dbVersion replaced by a number"); eq(e.SanctumDB.goals.enchantFromLevel, 40)
+    e, n = freshCore(function(e) e.SanctumDB = { dbVersion = 1, goals = { enchantFromLevel = 40 } } end)
+    fireIn(n, "ADDON_LOADED", "Sanctum")
+    eq(e.SanctumDB.goals.enchantFromLevel, 40, "dbVersion 1 means step 1 is done")
+end)
+-- H10: missing / garbage containers
+T("SavedVars: nil or string SanctumDB / SanctumCharDB fall back to defaults", function()
+    for _, junk in ipairs({ "nil", "string", "number" }) do
+        local bad = ({ ["nil"] = nil, string = "corrupt", number = 42 })[junk]
+        local e, n = freshCore(function(e) e.SanctumDB = bad; e.SanctumCharDB = bad end)
+        local ok, err = pcall(fireIn, n, "ADDON_LOADED", "Sanctum")
+        assert(ok, junk .. ": " .. tostring(err))
+        eq(type(e.SanctumDB), "table", junk); eq(type(e.SanctumCharDB), "table", junk)
+        eq(e.SanctumDB.frames.width, 130, junk); eq(e.SanctumDB.minimap.shown, true, junk)
+        eq(e.SanctumDB.goals.enchantFromLevel, 15, junk); eq(e.SanctumDB.dbVersion, 1, junk)
+        eq(e.SanctumCharDB.bindings["2"], "Renew", junk .. ": priest kit")
+        eq(e.SanctumCharDB.sequence.name, "Priest levelling DPS", junk)
+        eq(type(e.SanctumCharDB.buffWatch.list), "table", junk)
+        eq(e.SanctumCharDB.buffWatch.panel.size, 44, junk)
+        assert(n.db == e.SanctumDB and n.cdb == e.SanctumCharDB, junk .. ": ns.db/cdb point at the new tables")
+    end
+end)
+T("SavedVars: wrong-typed individual values reset to defaults", function()
+    local e, n = freshCore(function(e)
+        e.SanctumDB = { frames = { x = "left", locked = "yes", width = {}, scale = true, point = 5, spacing = 7 },
+                        minimap = "gone", goals = { enchantFromLevel = "20", shown = 1, onlyProblems = "no" } }
+        e.SanctumCharDB = { bindings = "x", sequence = 5, buffWatch = { list = "none",
+                            panel = { size = "big", locked = "no", x = {}, warnSecs = 15, sound = false } } }
+    end)
+    local ok, err = pcall(fireIn, n, "ADDON_LOADED", "Sanctum")
+    assert(ok, tostring(err))
+    local f, g = e.SanctumDB.frames, e.SanctumDB.goals
+    eq(f.x, -320, "string x"); eq(f.locked, false, "string locked"); eq(f.width, 130, "table width")
+    eq(f.scale, 1, "boolean scale"); eq(f.point, "CENTER", "number point"); eq(f.spacing, 7, "valid value kept")
+    eq(type(e.SanctumDB.minimap), "table"); eq(e.SanctumDB.minimap.angle, 200, "string minimap -> table defaults")
+    eq(g.enchantFromLevel, 15, "string level"); eq(g.shown, true, "number shown"); eq(g.onlyProblems, false)
+    local cd = e.SanctumCharDB
+    eq(type(cd.bindings), "table"); eq(cd.bindings["2"], "Renew")
+    eq(cd.sequence.name, "Priest levelling DPS"); eq(type(cd.buffWatch.list), "table")
+    local p = cd.buffWatch.panel
+    eq(p.size, 44); eq(p.locked, true); eq(p.x, 0); eq(p.sound, "trombone"); eq(p.warnSecs, 15, "valid value kept")
+end)
+
+print("== Hardening: Goals refresh batching")
+-- Goals schedules its flush with C_Timer.After(0.75, ...) (QUEUE_DELAY). The default mock runs
+-- timers instantly, so these tests capture that one timer and run it by hand. Snapshot calls are
+-- counted by wrapping G.Snapshot.
+local function goalsHarness(body)
+    local G = sns.Goals
+    local oldAfter, oldIC, oldSnap = env.C_Timer.After, env.InCombatLockdown, G.Snapshot
+    local h = { timers = {}, snaps = 0, combat = false }
+    env.InCombatLockdown = function() return h.combat end
+    env.C_Timer.After = function(d, fn)
+        if d == 0.75 then h.timers[#h.timers + 1] = fn else fn() end
+    end
+    function h.run() local t = h.timers; h.timers = {}; for _, fn in ipairs(t) do fn() end end
+    G.SetShown(true)                      -- Refresh needs the panel visible
+    G.Snapshot = function(...) h.snaps = h.snaps + 1; if h.inSnap then h.inSnap() end; return oldSnap(...) end
+    G.Queue(); h.run()                    -- drain anything dirty from earlier tests
+    h.snaps = 0
+    local ok, err = pcall(body, h)
+    env.C_Timer.After, env.InCombatLockdown, G.Snapshot = oldAfter, oldIC, oldSnap
+    h.combat = false
+    if not ok then error(err, 0) end
+end
+-- H11
+T("Goals: a burst of UNIT_AURA collapses into one snapshot", function()
+    goalsHarness(function(h)
+        for _ = 1, 20 do fire("UNIT_AURA", "player") end
+        fire("UNIT_AURA", "party1")                       -- not the player: ignored
+        eq(#h.timers, 1, "one timer for 20 events"); eq(h.snaps, 0, "nothing yet")
+        h.run()
+        eq(h.snaps, 1, "one snapshot")
+        fire("UNIT_AURA", "player")
+        eq(#h.timers, 1, "a later event schedules a fresh flush"); h.run(); eq(h.snaps, 2)
+        h.run(); eq(h.snaps, 2, "nothing left dirty")
+    end)
+end)
+T("Goals: events raised during the refresh itself do not re-trigger it", function()
+    goalsHarness(function(h)
+        h.inSnap = function() fire("GET_ITEM_INFO_RECEIVED"); fire("UNIT_AURA", "player") end
+        fire("UNIT_AURA", "player"); h.run()
+        eq(h.snaps, 1); eq(#h.timers, 0, "no follow-up flush scheduled")
+        h.inSnap = nil
+    end)
+end)
+-- H12
+T("Goals: nothing snapshots in combat; one refresh after PLAYER_REGEN_ENABLED", function()
+    goalsHarness(function(h)
+        h.combat = true
+        for _ = 1, 10 do fire("UNIT_AURA", "player") end
+        fire("PLAYER_REGEN_DISABLED"); fire("BAG_UPDATE_DELAYED"); fire("GET_ITEM_INFO_RECEIVED")
+        eq(#h.timers, 0, "no timers scheduled in combat"); eq(h.snaps, 0)
+        h.combat = false
+        fire("PLAYER_REGEN_ENABLED")
+        eq(#h.timers, 1, "combat end schedules exactly one flush")
+        h.run()
+        eq(h.snaps, 1, "one refresh")
+        h.run(); eq(h.snaps, 1)
+    end)
+end)
+T("Goals: a flush that fires while still in combat does not snapshot, and is not lost", function()
+    goalsHarness(function(h)
+        h.combat = true
+        fire("PLAYER_REGEN_ENABLED")           -- lockdown can still read true on the event
+        h.run()
+        eq(h.snaps, 0, "InCombatLockdown re-checked at flush time")
+        h.combat = false
+        fire("UNIT_AURA", "player"); h.run()   -- still dirty, so the next event refreshes
+        eq(h.snaps, 1)
+    end)
+end)
+
+print("== Hardening: version consistency")
+-- H13: TOC, CHANGELOG and the ns.version fallback must agree (they drift on every release).
+local function readFile(path)
+    local h = io.open(path, "r"); if not h then return nil end
+    local s = h:read("*a"); h:close(); return s
+end
+local function tocPath()
+    for _, f in ipairs({ "SanctumMini_Camelot.toc", "Sanctum_Camelot.toc", "Sanctum.toc" }) do
+        if readFile(f) then return f end
+    end
+end
+T("Version: TOC '## Version' == CHANGELOG top entry == ns.version fallback", function()
+    local toc = readFile(tocPath()); assert(toc, "TOC readable")
+    local tocVer = toc:match("\n?## Version:%s*([^\r\n]+)")
+    assert(tocVer, "TOC has a ## Version line")
+    tocVer = tocVer:gsub("%s+$", "")
+    local log = readFile("CHANGELOG.md"); assert(log, "CHANGELOG readable")
+    local topVer = log:match("##%s*%[([^%]]+)%]")
+    assert(topVer, "CHANGELOG has a [x.y.z] entry")
+    eq(topVer, tocVer, "CHANGELOG top entry vs TOC")
+    eq(sns.version, tocVer, "ns.version fallback (no metadata API in the mock) vs TOC")
+    local _, n = freshCore()
+    eq(n.version, tocVer, "fresh Core fallback vs TOC")
+    assert(tocVer:match("^%d+%.%d+%.%d+$"), "semver-shaped: " .. tocVer)
+end)
+
+-- Regression (0.7.0 health bars frozen): UNIT_HEALTH for player and party1 reaches F.UpdateUnit
+-- through the frame registered for the event (plain registration).
+T("Frames: UNIT_HEALTH for player/party reaches the unit frame update", function()
+    local F = sns.Frames
+    local ev = env._events["UNIT_HEALTH"]
+    assert(ev and ev._scripts.OnEvent, "a frame is registered for UNIT_HEALTH")
+    local orig, hit = F.UpdateUnit, 0
+    F.UpdateUnit = function() hit = hit + 1 end
+    for _, u in ipairs({ "player", "party1" }) do
+        local b = F.byUnit[u]
+        if b then b:Show() end
+        ev._scripts.OnEvent(ev, "UNIT_HEALTH", u)
+    end
+    F.UpdateUnit = orig
+    assert(hit >= 2, "player and party1 health events each updated a frame (hits=" .. hit .. ")")
 end)
 
 print(("\n%d passed, %d failed"):format(pass, fail))

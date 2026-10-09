@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.1] - 2026-10-09 (Beta, WoW: Forever 1.60.1)
+
+- Buff watch no longer shows false "missing" alerts, or overwrites its last known state, when the game hides aura names in combat
+- The login message now shows the real version
+- Buff watch refreshes aura changes in batches instead of on every event
+- The goals checklist batches its refreshes and skips them during combat
+- Adding a ninth buff to the watch list now tells you the list is full (limit 8)
+- An error in one event handler no longer stops the others, and it is reported once
+- Saved settings now carry a version number, so upgrades migrate once and corrupt saved data falls back to defaults
+- Development: GitHub Actions workflows for tests and releases, luacheck config
+- Test suite: see tests/run.lua
+
 ## [0.7.0] - 2026-10-07 (Beta, WoW: Forever 1.60.1)
 
 - Alert panel: a big, moveable, resizable, lockable panel for the buffs you care about most. In the Buff watch dropdown each ticked entry has a mode button: Bar (the small icon, as before), Panel: gone (flashes red when it is NOT on you) or Panel: on (flashes red while it IS on you)
