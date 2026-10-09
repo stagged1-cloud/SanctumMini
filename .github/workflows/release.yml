@@ -1,0 +1,28 @@
+# Tag a version (git tag v0.4.3 && git push --tags) to run the tests, build the
+# zip with the BigWigs packager, attach it to a GitHub release and, once
+# CF_API_TOKEN is set as a repo secret and X-Curse-Project-ID is in the TOC,
+# upload to CurseForge. Tags containing "beta" or "alpha" upload as Beta/Alpha.
+name: Package and release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run tests
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq lua5.1
+          lua5.1 tests/run.lua
+      - uses: BigWigsMods/packager@v2
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          GH_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
