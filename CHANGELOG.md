@@ -2,7 +2,7 @@
 
 ## [0.7.1] - 2026-10-09 (Beta, WoW: Forever 1.60.1)
 
-- New optional "Downranking zones" tick box (Options, off by default). When on, each unit bar is split into three zones: left third casts the lowest rank of the bound heal, middle third a middle rank, right third the highest. Ranks are picked automatically from the spells you know (re-checked on level-up, respec and new spells, out of combat only). Spells with no ranks, and non-heals, cast as normal in every zone. With the option off nothing changes. Untested on Forever
+- New optional "Downranking zones" tick box (Options, off by default). When on, each unit bar is split into three zones: left third casts the lowest rank of the bound heal, middle third a middle rank, right third the highest. Ranks are picked automatically from the spells you know (re-checked on level-up, respec and new spells, out of combat only). Spells with no ranks, and non-heals, cast as normal in every zone. With the option off nothing changes. Hovering a zone shows the spell and rank it will cast. Untested on Forever
 - Buff watch no longer shows false "missing" alerts, or overwrites its last known state, when the game hides aura names in combat
 - Buff watch no longer flashes "missing" when you recast a buff during a fight with aura reads blocked, and no longer shows a false amber warning from an out-of-date timer
 - The 8-icon limit now counts only bar icons (alert panel entries have their own limit of 12), and a warning appears at login if a saved list has more than can be drawn

@@ -164,6 +164,30 @@ function L.BuildZoneAttributes(bindings, slots, isKnown, ranks, canDownrank)
     return zones, info, report
 end
 
+-- Tooltip text for one zone, built from the attributes the zone really has (so it can't drift
+-- from what it casts). get(key) / getMax(key) read the zone's and the right-hand zone's attributes.
+-- Returns a list of strings, one per spell binding; never writes anything.
+function L.ZoneTooltipLines(zone, get, getMax, slots)
+    local lines = {}
+    if type(get) == "function" then
+        for _, slot in ipairs(slots or {}) do
+            local key = slot.mod .. "spell" .. slot.button
+            local v = get(key)
+            if type(v) == "string" and v ~= "" then
+                local name, rank = v:match("^(.-)%(Rank (%d+)%)$")
+                local text
+                if rank then text = ("%s (Rank %s)"):format(name, rank)
+                elseif zone == "max" then text = v .. " (highest rank)"
+                elseif type(getMax) == "function" and getMax(key) == v then text = v .. " - same as the right third"
+                else text = v end
+                lines[#lines + 1] = slot.label .. ": " .. text
+            end
+        end
+    end
+    if #lines == 0 then lines[1] = "No ranked spell set for this zone" end
+    return lines
+end
+
 -- Set of dispel types the player can remove, from known spells.
 function L.DispelTypes(dispelSpells, isKnown)
     local out = {}

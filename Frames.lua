@@ -77,6 +77,12 @@ local function zoneTooltip(z)
         GameTooltip:SetUnit(b.unit)
         local label = ({ low = "Left third: lowest rank", mid = "Middle third: middle rank", max = "Right third: highest rank" })[z.zone]
         GameTooltip:AddLine(label, 0.7, 0.7, 0.7)
+        -- Read-only: shows exactly what this zone's attributes will cast (safe in combat).
+        local top = b.zones[#b.zones]
+        for _, line in ipairs(L.ZoneTooltipLines(z.zone,
+            function(k) return z:GetAttribute(k) end, function(k) return top:GetAttribute(k) end, D.clickSlots)) do
+            GameTooltip:AddLine(line, 1, 1, 1)
+        end
         GameTooltip:Show()
     end
 end
