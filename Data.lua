@@ -73,6 +73,16 @@ D.classKits = {
     },
 }
 
+-- Single-target heals and heal-over-time spells that can be downranked (the optional
+-- three-zone bars). Anything not listed (buffs, dispels, resurrections, group heals, Lay on
+-- Hands) casts normally in every zone. Names researched, not yet checked on WoW: Forever.
+D.downrankable = {
+    ["Lesser Heal"] = true, ["Heal"] = true, ["Greater Heal"] = true, ["Flash Heal"] = true, ["Renew"] = true,
+    ["Healing Touch"] = true, ["Regrowth"] = true, ["Rejuvenation"] = true,
+    ["Holy Light"] = true, ["Flash of Light"] = true,
+    ["Healing Wave"] = true, ["Lesser Healing Wave"] = true, ["Chain Heal"] = true,
+}
+
 -- Which dispel types each known spell lets you remove.
 D.dispelSpells = {
     ["Dispel Magic"]    = { Magic = true },

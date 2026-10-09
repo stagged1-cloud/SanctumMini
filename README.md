@@ -7,6 +7,7 @@ Healer party frames with click-casting, a GSE-style sequence button, a talent pl
 ## Features
 
 - **Own party frames** - player + party1-4 as secure unit buttons. Health, mana, dispellable debuffs and tracked buffs. Click-cast any mouse button / modifier combination. Nothing protected is touched in combat.
+- **Downranking zones (optional, off by default)** - tick it in Options and each bar splits into three zones, left to right: lowest rank, middle rank, highest rank. The mouse button still picks the spell; the zone picks the rank, chosen automatically from the ranks you know. Lower ranks heal less but cost far less mana, so use the left zone for small top-ups. Spells without ranks cast as normal. Beta: untested on Forever.
 - **Sequence button** - GSE-style stepping macro (KeyPress / steps / PostMacro). Steps advance in a secure snippet, so it works in combat. Priority mode for a single smart macro. Bind a key with `/sanc bind F` or use `/click SanctumSeqButton`.
 - **Cast log** - every press, cast, fail and error, persisted between sessions (`/sanc log`).
 - **Talent planner** - recommended Forever builds for Priest, Druid, Paladin and Shaman, what you should have at your level, what you actually have, and the next point printed on every level-up.

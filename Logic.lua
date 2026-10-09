@@ -82,6 +82,88 @@ function L.BuildClickAttributes(bindings, slots, isKnown)
     return attrs, report
 end
 
+---------------------------------------------------------------------------
+-- Downranking (optional, off by default). Each unit bar is split into three zones,
+-- left to right: low, mid and max rank. The mouse button still picks the spell.
+---------------------------------------------------------------------------
+L.ZONES = { "low", "mid", "max" }
+
+-- Spellbook sub-text ("Rank 3") -> 3. nil for anything that is not a rank.
+function L.ParseRank(sub)
+    if type(sub) ~= "string" then return nil end
+    local n = tonumber(sub:match("(%d+)"))
+    if n and n >= 1 and n == math.floor(n) then return n end
+    return nil
+end
+
+-- Record one learned rank for a spell: ranks[name] = sorted, de-duplicated list of rank numbers.
+-- Entries with no readable rank number are ignored. Returns true if something was recorded.
+function L.RecordRank(ranks, name, sub)
+    local r = L.ParseRank(sub)
+    if type(ranks) ~= "table" or type(name) ~= "string" or name == "" or not r then return false end
+    local list = ranks[name]
+    if not list then list = {}; ranks[name] = list end
+    for _, v in ipairs(list) do if v == r then return false end end
+    list[#list + 1] = r
+    table.sort(list)
+    return true
+end
+
+-- Learned ranks of a spell -> low, mid, max rank numbers; nil when there is no usable rank data.
+--   1 rank known:  low = mid = max.
+--   2 ranks known: low, max, max (mid takes the higher rank, so only the left third is "economy").
+--   3+ ranks:      lowest, the upper median (index floor(n/2)+1), highest.
+-- Junk (non-numbers, zero, negatives, duplicates, unsorted input) is cleaned first.
+function L.PickRanks(list)
+    if type(list) ~= "table" then return nil end
+    local seen, clean = {}, {}
+    for _, v in ipairs(list) do
+        if type(v) == "number" and v >= 1 and v == math.floor(v) and not seen[v] then
+            seen[v] = true
+            clean[#clean + 1] = v
+        end
+    end
+    local n = #clean
+    if n == 0 then return nil end
+    table.sort(clean)
+    return clean[1], clean[math.floor(n / 2) + 1], clean[n]
+end
+
+-- "Heal" + 2 -> "Heal(Rank 2)"; anything unusable returns the plain name (cast highest rank).
+function L.RankedSpellName(name, rank)
+    if type(name) ~= "string" then return name end
+    if type(rank) ~= "number" or rank < 1 then return name end
+    return ("%s(Rank %d)"):format(name, rank)
+end
+
+-- Per-zone secure attributes.
+-- Returns zones = { low = attrs, mid = attrs, max = attrs } and info = { [slot.key] = { spell, low, mid, max } }
+-- (info only for slots that really are downranked). The max zone is always exactly the normal
+-- BuildClickAttributes result, so it casts the highest rank by plain name like the single bar does.
+-- A spell is only downranked when it is in `canDownrank` ({ [name] = true }) AND has rank data;
+-- anything else (utility, buffs, target, menu, unknown rank data) casts normally in every zone.
+function L.BuildZoneAttributes(bindings, slots, isKnown, ranks, canDownrank)
+    local base, report = L.BuildClickAttributes(bindings, slots, isKnown)
+    local zones = { low = {}, mid = {}, max = {} }
+    for k, v in pairs(base) do zones.low[k] = v; zones.mid[k] = v; zones.max[k] = v end
+    local info = {}
+    if type(ranks) ~= "table" or type(canDownrank) ~= "table" then return zones, info, report end
+    for _, r in ipairs(report) do
+        local slot, spell = r.slot, r.spell
+        if r.kind == "spell" and spell and canDownrank[spell] then
+            local lo, mid, hi = L.PickRanks(ranks[spell])
+            if lo then
+                local key = slot.mod .. "spell" .. slot.button
+                zones.low[key] = L.RankedSpellName(spell, lo)
+                zones.mid[key] = L.RankedSpellName(spell, mid)
+                -- max stays the plain name: always the best rank, even if the spellbook scan is stale
+                info[slot.key] = { spell = spell, low = lo, mid = mid, max = hi }
+            end
+        end
+    end
+    return zones, info, report
+end
+
 -- Set of dispel types the player can remove, from known spells.
 function L.DispelTypes(dispelSpells, isKnown)
     local out = {}

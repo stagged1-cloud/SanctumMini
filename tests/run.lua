@@ -2488,5 +2488,190 @@ T("Frames: UNIT_HEALTH for player/party reaches the unit frame update", function
     assert(hit >= 2, "player and party1 health events each updated a frame (hits=" .. hit .. ")")
 end)
 
+print("== Downranking: pure logic")
+-- DR1: rank text parsing, including junk
+T("ParseRank: 'Rank 3' -> 3; junk -> nil", function()
+    eq(L.ParseRank("Rank 3"), 3); eq(L.ParseRank("Rank 10"), 10)
+    eq(L.ParseRank(""), nil); eq(L.ParseRank(nil), nil); eq(L.ParseRank(5), nil)
+    eq(L.ParseRank("Apprentice"), nil); eq(L.ParseRank("Rank 0"), nil)
+end)
+-- DR2: recording is sorted, de-duplicated, ignores junk
+T("RecordRank sorts, dedupes and ignores junk", function()
+    local r = {}
+    eq(L.RecordRank(r, "Heal", "Rank 3"), true); L.RecordRank(r, "Heal", "Rank 1"); L.RecordRank(r, "Heal", "Rank 2")
+    eq(L.RecordRank(r, "Heal", "Rank 2"), false, "duplicate")
+    eq(L.RecordRank(r, "Heal", ""), false); eq(L.RecordRank(r, nil, "Rank 1"), false); eq(L.RecordRank(nil, "Heal", "Rank 1"), false)
+    eq(table.concat(r.Heal, ","), "1,2,3"); eq(r[""], nil)
+end)
+-- DR3: normal case, 3 ranks
+T("PickRanks 3 ranks -> lowest, middle, highest", function()
+    local lo, mid, hi = L.PickRanks({ 1, 2, 3 }); eq(lo, 1); eq(mid, 2); eq(hi, 3)
+end)
+-- DR4: one rank, all zones the same
+T("PickRanks 1 rank -> all the same", function()
+    local lo, mid, hi = L.PickRanks({ 4 }); eq(lo, 4); eq(mid, 4); eq(hi, 4)
+end)
+-- DR5: two ranks: documented choice is low, max, max
+T("PickRanks 2 ranks -> low, max, max", function()
+    local lo, mid, hi = L.PickRanks({ 2, 1 }); eq(lo, 1); eq(mid, 2); eq(hi, 2)
+end)
+-- DR6: middle is the one nearest the middle of the known ranks (upper median)
+T("PickRanks mid is the median of the known ranks", function()
+    local _, m5 = L.PickRanks({ 1, 2, 3, 4, 5 }); eq(m5, 3)
+    local _, m4 = L.PickRanks({ 1, 2, 3, 4 }); eq(m4, 3)
+    local lo, m7, hi = L.PickRanks({ 1, 2, 3, 4, 5, 6, 7 }); eq(lo, 1); eq(m7, 4); eq(hi, 7)
+end)
+-- DR7: gaps (unlearned ranks) use only what is known; unsorted and duplicate input is cleaned
+T("PickRanks uses only known ranks, handles gaps/unsorted/duplicates", function()
+    local lo, mid, hi = L.PickRanks({ 7, 1, 4, 4, 1 }); eq(lo, 1); eq(mid, 4); eq(hi, 7)
+end)
+-- DR8: no data / invalid input
+T("PickRanks invalid input -> nil", function()
+    eq(L.PickRanks(nil), nil); eq(L.PickRanks({}), nil); eq(L.PickRanks("x"), nil)
+    eq(L.PickRanks({ "a", 0, -1, 1.5 }), nil)
+end)
+-- DR9: spell naming
+T("RankedSpellName", function()
+    eq(L.RankedSpellName("Healing Touch", 2), "Healing Touch(Rank 2)")
+    eq(L.RankedSpellName("Healing Touch", nil), "Healing Touch")
+    eq(L.RankedSpellName("Healing Touch", 0), "Healing Touch")
+    eq(L.RankedSpellName(nil, 1), nil)
+end)
+
+print("== Downranking: zone attributes")
+local drKit = { ["1"] = "Healing Touch", ["2"] = "Rejuvenation", ["3"] = "Rebirth", ["shift-1"] = "@target", ["ctrl-2"] = "Remove Curse|Cure Poison" }
+local drRanks = { ["Healing Touch"] = { 1, 2, 3, 4, 5 }, ["Rejuvenation"] = { 1 }, ["Rebirth"] = { 1, 2, 3 } }
+local drKnown = knownSet({ "Healing Touch", "Rejuvenation", "Rebirth", "Cure Poison" })
+-- DR10: heal expands across zones; max is exactly the normal attributes
+T("BuildZoneAttributes: heal gets low/mid/max ranks, max == normal bar", function()
+    local z, info = L.BuildZoneAttributes(drKit, D.clickSlots, drKnown, drRanks, D.downrankable)
+    local base = L.BuildClickAttributes(drKit, D.clickSlots, drKnown)
+    eq(z.low.spell1, "Healing Touch(Rank 1)"); eq(z.mid.spell1, "Healing Touch(Rank 3)"); eq(z.max.spell1, "Healing Touch")
+    for k, v in pairs(base) do eq(z.max[k], v, k) end
+    for k in pairs(z.max) do eq(base[k] ~= nil, true, k) end
+    eq(info["1"].low, 1); eq(info["1"].mid, 3); eq(info["1"].max, 5)
+end)
+-- DR11: one rank known -> same cast in every zone
+T("BuildZoneAttributes: one rank known -> zones agree", function()
+    local z = L.BuildZoneAttributes(drKit, D.clickSlots, drKnown, drRanks, D.downrankable)
+    eq(z.low.spell2, "Rejuvenation(Rank 1)"); eq(z.mid.spell2, "Rejuvenation(Rank 1)"); eq(z.max.spell2, "Rejuvenation")
+end)
+-- DR12: non-heals, target tokens and priority fall-through cast normally everywhere
+T("BuildZoneAttributes: utility spells, @target and priority lists unchanged", function()
+    local z = L.BuildZoneAttributes(drKit, D.clickSlots, drKnown, drRanks, D.downrankable)
+    for _, zone in ipairs(L.ZONES) do
+        eq(z[zone].spell3, "Rebirth", "Rebirth is not a downrank spell")
+        eq(z[zone]["shift-type1"], "target")
+        eq(z[zone]["ctrl-spell2"], "Cure Poison")
+        eq(z[zone].type1, "spell")
+    end
+end)
+-- DR13: no rank data / nil tables -> identical to normal in every zone
+T("BuildZoneAttributes: no rank data or bad tables -> normal casting", function()
+    local base = L.BuildClickAttributes(drKit, D.clickSlots, drKnown)
+    for _, args in ipairs({ { {}, D.downrankable }, { false, D.downrankable }, { drRanks, false }, { { ["Healing Touch"] = {} }, D.downrankable } }) do
+        local z, info = L.BuildZoneAttributes(drKit, D.clickSlots, drKnown, args[1] or nil, args[2] or nil)
+        for _, zone in ipairs(L.ZONES) do for k, v in pairs(base) do eq(z[zone][k], v, zone .. " " .. k) end end
+        eq(next(info), nil)
+    end
+end)
+-- DR14: a spell that is not known is never ranked (rank data alone is not enough)
+T("BuildZoneAttributes: unknown spell gets nothing", function()
+    local z = L.BuildZoneAttributes({ ["1"] = "Healing Touch" }, D.clickSlots, knownSet({}), drRanks, D.downrankable)
+    eq(z.low.spell1, nil); eq(z.low.type1, "target")
+end)
+-- DR15: the downrankable list is heals only
+T("Data: downrankable contains heals, not utility", function()
+    eq(D.downrankable["Healing Touch"], true); eq(D.downrankable["Flash Heal"], true)
+    eq(D.downrankable["Resurrection"], nil); eq(D.downrankable["Dispel Magic"], nil); eq(D.downrankable["Power Word: Fortitude"], nil)
+end)
+
+print("== Downranking: smoke (mocked client)")
+-- Earlier smoke tests leave the mock in assorted states: pin a known spellbook and the priest kit first.
+local function drSetup(book)
+    env.InCombatLockdown = function() return false end
+    env.GetSpellTabInfo = function() return "General", nil, 0, #book end
+    env.GetSpellBookItemName = function(i) if book[i] then return book[i][1], book[i][2] end end
+    sns.cdb.bindings = sns.Copy(D.classKits.PRIEST)
+    sns.db.frames.downrank = false
+    fire("SPELLS_CHANGED")
+end
+local drBook = { { "Lesser Heal", "Rank 1" }, { "Lesser Heal", "Rank 2" }, { "Lesser Heal", "Rank 3" }, { "Heal", "Rank 1" }, { "Renew", "Rank 1" } }
+-- DR16: option defaults off, and with it off the zones are hidden with no attributes
+T("Downrank defaults OFF; zones hidden and empty; bar attributes untouched", function()
+    drSetup(drBook)
+    eq(sns.db.frames.downrank, false)
+    local b = sns.Frames.buttons[1]
+    eq(#b.zones, 3)
+    for _, z in ipairs(b.zones) do eq(z:IsShown(), false); eq(z:GetAttribute("spell1"), nil); eq(z:GetAttribute("type1"), nil) end
+    eq(b:GetAttribute("spell1"), "Heal")
+end)
+-- DR16b: a brand-new save, and an old save that predates the option, both get downrank = false
+T("Downrank default is false for new and pre-existing saves", function()
+    local e, n = freshCore()
+    fireIn(n, "ADDON_LOADED", "Sanctum")
+    eq(e.SanctumDB.frames.downrank, false)
+    local e2, n2 = freshCore(function(env2) env2.SanctumDB = { frames = { width = 200 }, goals = { enchantFromLevel = 15 } } end)
+    fireIn(n2, "ADDON_LOADED", "Sanctum")
+    eq(e2.SanctumDB.frames.downrank, false); eq(e2.SanctumDB.frames.width, 200, "existing settings kept")
+    local e3, n3 = freshCore(function(env3) env3.SanctumDB = { frames = { downrank = "yes" } } end)
+    fireIn(n3, "ADDON_LOADED", "Sanctum")
+    eq(e3.SanctumDB.frames.downrank, false, "corrupt value falls back to off")
+end)
+-- DR17: turning it on (via the Options tick) configures zones from the spellbook ranks; bar stays as is
+T("Downrank ON: zones get ranked spells from learned ranks", function()
+    drSetup(drBook)
+    eq(table.concat(sns.ranks["Lesser Heal"], ","), "1,2,3")
+    local b = sns.Frames.buttons[1]
+    eq(b:GetAttribute("spell1"), "Heal", "bar unchanged while option off")
+    env.SlashCmdList.SANCTUM("")
+    local cb = sns.Options.frame.checks[9].cb
+    cb:SetChecked(true); cb:GetScript("OnClick")(cb)
+    eq(env.SanctumDB.frames.downrank, true)
+    for _, z in ipairs(b.zones) do eq(z:IsShown(), true) end
+    eq(b.zones[1]:GetAttribute("spell1"), "Heal(Rank 1)")
+    eq(b.zones[3]:GetAttribute("spell1"), "Heal")
+    eq(b.zones[1]:GetAttribute("spell2"), "Renew(Rank 1)")
+    eq(b:GetAttribute("spell1"), "Heal", "bar itself still unchanged")
+end)
+-- DR18: in combat nothing is touched; it applies on PLAYER_REGEN_ENABLED
+T("Downrank toggle in combat is queued, not applied", function()
+    drSetup(drBook)
+    local b = sns.Frames.buttons[1]
+    sns.db.frames.downrank = true; sns.Frames.ApplyZones()
+    eq(b.zones[1]:IsShown(), true)
+    env.InCombatLockdown = function() return true end
+    sns.db.frames.downrank = false
+    sns.Frames.ApplyZones()
+    eq(b.zones[1]:IsShown(), true, "untouched in combat")
+    eq(b.zones[1]:GetAttribute("spell1"), "Heal(Rank 1)", "attributes untouched in combat")
+    env.InCombatLockdown = function() return false end
+    fire("PLAYER_REGEN_ENABLED")
+    eq(b.zones[1]:IsShown(), false); eq(b.zones[1]:GetAttribute("spell1"), nil)
+end)
+-- DR19: level-up rescans out of combat and refreshes the zones
+T("Downrank: level-up picks up new ranks", function()
+    drSetup(drBook)
+    sns.db.frames.downrank = true
+    sns.Frames.ApplyZones()
+    env.GetSpellTabInfo = function() return "General", nil, 0, 6 end
+    env.GetSpellBookItemName = function(i)
+        local t = { { "Lesser Heal", "Rank 1" }, { "Lesser Heal", "Rank 2" }, { "Lesser Heal", "Rank 3" }, { "Heal", "Rank 1" }, { "Heal", "Rank 2" }, { "Heal", "Rank 3" } }
+        if t[i] then return t[i][1], t[i][2] end
+    end
+    fire("PLAYER_LEVEL_UP")
+    local b = sns.Frames.buttons[1]
+    eq(b.zones[1]:GetAttribute("spell1"), "Heal(Rank 1)"); eq(b.zones[2]:GetAttribute("spell1"), "Heal(Rank 2)")
+    env.SanctumDB.frames.downrank = false
+    sns.Frames.ApplyZones()
+    eq(b.zones[2]:IsShown(), false)
+end)
+-- DR20: README and CHANGELOG mention it, version untouched
+T("Docs mention downranking; version number unchanged", function()
+    local rd, cl = readFile("README.md"), readFile("CHANGELOG.md")
+    assert(rd:lower():find("downrank"), "README"); assert(cl:lower():find("downrank"), "CHANGELOG")
+    assert(cl:match("##%s*%[0%.7%.1%]"), "0.7.1 entry still present")
+end)
+
 print(("\n%d passed, %d failed"):format(pass, fail))
 os.exit(fail == 0 and 0 or 1)

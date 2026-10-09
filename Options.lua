@@ -7,7 +7,7 @@ local O = {}
 ns.Options = O
 local D, L = ns.Data, ns.Logic
 
-local W, H = 780, 560
+local W, H = 780, 640
 
 local function label(parent, text, template)
     local fs = parent:CreateFontString(nil, "OVERLAY", template or "GameFontHighlightSmall")
@@ -451,6 +451,11 @@ local function build()
         { "Goals: problems only", function() return gdb.onlyProblems end, function(v) gdb.onlyProblems = v; ns.Goals.Refresh() end },
         { "Minimap icon", function() return ns.db.minimap.shown end, function() ns.Minimap.Toggle() end },
         { "Test mode (fake party)", function() return ns.Frames.test end, function() ns.Frames.ToggleTest() end },
+        { "Downranking zones", function() return fdb.downrank end, function(v)
+            fdb.downrank = v
+            if InCombatLockdown() then ns.Print("downranking zones will change when combat ends") end
+            ns.Frames.ApplyZones()
+        end },
     }
     for i, o in ipairs(opts) do
         local col, rowN = (i - 1) % 3, math.floor((i - 1) / 3)
@@ -468,6 +473,8 @@ local function build()
     f.enchLvl = enchLvl
     local en = label(f, "|cff999999Missing enchants are flagged from this level with the best healer enchant for it. Slots with nothing worth enchanting yet (gloves before 60) are skipped.|r")
     en:SetPoint("TOPLEFT", el, "BOTTOMLEFT", 0, -6); en:SetWidth(420); en:SetJustifyH("LEFT")
+    local dr = label(f, "|cff999999Downranking zones: healing spells come in ranks, and a higher rank heals more but costs a lot more mana. With this ticked, each bar is split into three zones, left to right. Left third casts the lowest rank you know, middle third a middle rank, right third your highest rank. The mouse button still picks the spell. Ranks are worked out automatically from the spells you know, so there is nothing extra to set. Use the left zone for small top-ups to save mana. Spells with no ranks (buffs, dispels, resurrections) cast as normal in every zone. Off by default; with it off the bars work exactly as before. Changes apply out of combat.|r")
+    dr:SetPoint("TOPLEFT", en, "BOTTOMLEFT", 0, -10); dr:SetWidth(420); dr:SetJustifyH("LEFT")
 
     -- Sequence editor
     local x = 480

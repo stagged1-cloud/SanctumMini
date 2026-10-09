@@ -130,11 +130,13 @@ function C.IncomingHeals(unit)
 end
 
 -- Known-spell set built from the spellbook (names, highest rank implied).
-ns.known, ns.spellList = {}, {}
+ns.known, ns.spellList, ns.ranks = {}, {}, {}
 function C.ScanSpellbook()
-    local known, castable = {}, {}
-    local function add(name, icon, passive)
+    local known, castable, ranks = {}, {}, {}
+    local function add(name, icon, passive, sub)
         known[name] = true
+        -- Learned ranks (spellbook sub-text "Rank N"), used only by the optional downrank zones.
+        ns.Logic.RecordRank(ranks, name, sub)
         if not passive and not castable[name] then castable[name] = icon or true end
     end
     local okModern = false
@@ -147,32 +149,38 @@ function C.ScanSpellbook()
                     for i = line.itemIndexOffset + 1, line.itemIndexOffset + line.numSpellBookItems do
                         local info = C_SpellBook.GetSpellBookItemInfo(i, bank)
                         if info and info.name and info.itemType ~= (Enum.SpellBookItemType and Enum.SpellBookItemType.FutureSpell) then
-                            add(info.name, info.iconID, info.isPassive)
+                            local sub = info.subName
+                            if sub == nil and C_SpellBook.GetSpellBookItemName then
+                                local _, s2 = C_SpellBook.GetSpellBookItemName(i, bank)
+                                sub = s2
+                            end
+                            add(info.name, info.iconID, info.isPassive, sub)
                         end
                     end
                 end
             end
         end)
         okModern = okModern and next(known) ~= nil
-        if not okModern then known, castable = {}, {} end
+        if not okModern then known, castable, ranks = {}, {}, {} end
     end
     if not okModern and GetNumSpellTabs then
         pcall(function()
             for t = 1, GetNumSpellTabs() do
                 local _, _, offset, num = GetSpellTabInfo(t)
                 for i = offset + 1, offset + num do
-                    local name = GetSpellBookItemName(i, BOOKTYPE_SPELL or "spell")
+                    local name, sub = GetSpellBookItemName(i, BOOKTYPE_SPELL or "spell")
                     local kind = GetSpellBookItemInfo and GetSpellBookItemInfo(i, BOOKTYPE_SPELL or "spell")
                     if name and kind ~= "FUTURESPELL" then
                         local icon = GetSpellBookItemTexture and GetSpellBookItemTexture(i, BOOKTYPE_SPELL or "spell")
                         local passive = IsPassiveSpell and IsPassiveSpell(i, BOOKTYPE_SPELL or "spell")
-                        add(name, icon, passive)
+                        add(name, icon, passive, sub)
                     end
                 end
             end
         end)
     end
     ns.known = known
+    ns.ranks = ranks
     -- Sorted castable list for the spell picker: { {name=, icon=} }
     local list = {}
     for name, icon in pairs(castable) do list[#list + 1] = { name = name, icon = icon ~= true and icon or nil } end
@@ -211,7 +219,8 @@ end
 ---------------------------------------------------------------------------
 local defaults = {
     frames = { x = -320, y = 60, point = "CENTER", locked = false, scale = 1, width = 130, height = 40,
-               spacing = 3, classColours = true, showMana = true, showSelfFirst = true },
+               spacing = 3, classColours = true, showMana = true, showSelfFirst = true,
+               downrank = false },   -- optional three-zone rank bars, off by default
     minimap = { shown = true, angle = 200 },
     goals = { shown = true, x = 320, y = 120, point = "CENTER", enchantFromLevel = 15, onlyProblems = false },
 }
@@ -395,6 +404,18 @@ local function onSpellsChanged()
 end
 ns.On("SPELLS_CHANGED", onSpellsChanged)
 ns.On("LEARNED_SPELL_IN_TAB", onSpellsChanged)
+-- Downrank zones follow what you know: a level-up or respec rescans out of combat (queued if needed).
+-- The rank list comes from the spellbook alone, so these only make sure it is fresh.
+local function onRanksMayChange()
+    if not (ns.db and ns.db.frames.downrank) then return end
+    ns.RunOOC("rankscan", function()
+        C.ScanSpellbook()
+        if ns.Frames and ns.Frames.ready then ns.Frames.ApplyZones() end
+    end)
+end
+ns.On("PLAYER_LEVEL_UP", onRanksMayChange)
+ns.On("CHARACTER_POINTS_CHANGED", onRanksMayChange)
+ns.On("ACTIVE_TALENT_GROUP_CHANGED", onRanksMayChange)
 
 ns.On("CVAR_UPDATE", function(_, name)
     if name and tostring(name):lower() == "actionbuttonusekeydown" then

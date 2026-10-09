@@ -67,6 +67,47 @@ local function setBorder(b, r, g, bl, a)
     for _, t in ipairs(b.borderTex) do t:SetColorTexture(r, g, bl, a or 1) end
 end
 
+-- Optional downrank zones: three secure child buttons per bar (left third = lowest rank,
+-- middle = middle rank, right = highest). Created hidden and without attributes; shown and
+-- configured only out of combat by F.ApplyZones, and only when the option is on.
+local function zoneTooltip(z)
+    local b = z.bar
+    if UnitExists(b.unit) then
+        GameTooltip_SetDefaultAnchor(GameTooltip, z)
+        GameTooltip:SetUnit(b.unit)
+        local label = ({ low = "Left third: lowest rank", mid = "Middle third: middle rank", max = "Right third: highest rank" })[z.zone]
+        GameTooltip:AddLine(label, 0.7, 0.7, 0.7)
+        GameTooltip:Show()
+    end
+end
+
+local function createZones(b, i)
+    b.zones = {}
+    for n, key in ipairs(L.ZONES) do
+        local z = CreateFrame("Button", "SanctumUnitButton" .. i .. "Zone" .. n, b, "SecureUnitButtonTemplate")
+        z.bar, z.zone = b, key
+        z:SetAttribute("unit", b.unit)
+        z:RegisterForClicks(ns.ClickEdge())
+        z:SetFrameLevel(b:GetFrameLevel() + 10)
+        local hl = z:CreateTexture(nil, "HIGHLIGHT")
+        hl:SetAllPoints()
+        hl:SetColorTexture(1, 1, 1, 0.12)
+        z:SetScript("OnEnter", zoneTooltip)
+        z:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        z:Hide()
+        b.zones[n] = z
+    end
+    -- Faint divider lines on the (non-secure) overlay so the zones are visible.
+    b.zoneLines = {}
+    for n = 1, 2 do
+        local t = b.overlay:CreateTexture(nil, "OVERLAY")
+        t:SetWidth(1)
+        t:SetColorTexture(1, 1, 1, 0.25)
+        t:Hide()
+        b.zoneLines[n] = t
+    end
+end
+
 local function createButton(i, unit)
     local db = ns.db.frames
     local b = CreateFrame("Button", "SanctumUnitButton" .. i, F.anchor, "SecureUnitButtonTemplate")
@@ -148,6 +189,7 @@ local function createButton(i, unit)
     b:HookScript("OnShow", function(self) F.UpdateUnit(self); F.UpdateAuras(self); F.PlaceGrip() end)
     b:HookScript("OnHide", function() F.PlaceGrip() end)
 
+    createZones(b, i)
     F.LayoutButton(b)
     RegisterUnitWatch(b)
     return b
@@ -166,6 +208,19 @@ function F.LayoutButton(b)
     b.mana:SetHeight(math.max(manaH, 1))
     b.mana:SetShown(db.showMana)
     b.nameText:SetWidth(db.width - 40)
+    if b.zones then   -- downrank zones: equal thirds (sizes only change out of combat, like the bar itself)
+        local third = db.width / 3
+        for n, z in ipairs(b.zones) do
+            z:ClearAllPoints()
+            z:SetPoint("TOPLEFT", b, "TOPLEFT", (n - 1) * third, 0)
+            z:SetSize(third, db.height)
+        end
+        for n, t in ipairs(b.zoneLines) do
+            t:ClearAllPoints()
+            t:SetPoint("TOPLEFT", b.overlay, "TOPLEFT", n * third, -4)
+            t:SetPoint("BOTTOMLEFT", b.overlay, "BOTTOMLEFT", n * third, 4)
+        end
+    end
 end
 
 function F.Layout()
@@ -289,6 +344,35 @@ function F.ApplyBindings()
     F.rangeSpell = attrs["spell1"]
     F.canDispel = L.DispelTypes(D.dispelSpells, ns.IsKnown)
     for _, b in ipairs(F.buttons) do F.UpdateAuras(b) end
+    F.ApplyZones()
+end
+
+-- Downrank zones. Option off (default): every zone is hidden and has no attributes, so the
+-- single bar behaves exactly as before. Option on: each zone gets the same bindings with the
+-- rank chosen automatically from the ranks you know. Protected, so out of combat only.
+function F.ApplyZones()
+    if InCombatLockdown() then return ns.RunOOC("zones", F.ApplyZones) end
+    local on = ns.db.frames.downrank == true
+    local zattrs, info
+    if on then
+        zattrs, info = L.BuildZoneAttributes(ns.cdb.bindings, D.clickSlots, ns.IsKnown, ns.ranks, D.downrankable)
+    end
+    for _, b in ipairs(F.buttons) do
+        if b.zones then
+            for n, z in ipairs(b.zones) do
+                for _, slot in ipairs(D.clickSlots) do
+                    for _, k in ipairs(L.SlotAttributeKeys(slot)) do z:SetAttribute(k, nil) end
+                end
+                z:SetAttribute("type1", nil)
+                if on then
+                    for k, v in pairs(zattrs[z.zone]) do z:SetAttribute(k, v) end
+                end
+                z:SetShown(on)
+            end
+            for _, t in ipairs(b.zoneLines) do t:SetShown(on) end
+        end
+    end
+    F.zoneInfo = info
 end
 
 function F.SyncClickEdge()
