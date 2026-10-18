@@ -678,6 +678,53 @@ T("BuffWatchState: weapon imbue", function()
     eq(L.BuffWatchState(tracked, {}, 0, { mainHand = false })[1].up, false)
     eq(L.BuffWatchState(tracked, {}, 0, nil)[1].up, false, "no weapon info -> missing")
 end)
+-- IM1: tooltip durations in min / sec / hour; junk gives nil
+T("ParseDurationText: min, sec, hour, junk", function()
+    eq(L.ParseDurationText("Rockbiter 3 (59 min)"), 3540)
+    eq(L.ParseDurationText("Flametongue 2 (30 sec)"), 30)
+    eq(L.ParseDurationText("Windfury 1 (1 hour)"), 3600)
+    eq(L.ParseDurationText("Windfury Blade (Heroic)"), nil, "not a time")
+    eq(L.ParseDurationText(nil), nil, "nil input")
+end)
+-- IM2: the green imbue line on the weapon tooltip is found; other lines are not imbues
+T("ImbueFromTooltip: imbue line, no line, unreadable, look-alike item", function()
+    local up, secs = L.ImbueFromTooltip({ "Worn Mace", "One-Hand", "Rockbiter 3 (59 min)", "Durability 20 / 20" })
+    eq(up, true); eq(secs, 3540)
+    up, secs = L.ImbueFromTooltip({ "Worn Mace", "Rockbiter 3" })
+    eq(up, true, "no time shown still counts"); eq(secs, nil)
+    eq(L.ImbueFromTooltip({ "Worn Mace", "One-Hand" }), false, "readable, no imbue")
+    eq(L.ImbueFromTooltip({ "Windfury Blade (Heroic)" }), false, "item named after an imbue")
+    eq(L.ImbueFromTooltip({ "Windfury Totem 1 (5 min)" }), false, "totem is not your imbue")
+    eq(L.ImbueFromTooltip(nil), nil, "unreadable -> unknown")
+end)
+-- IM3: an imbue shown as an aura is picked up, ordinary buffs are not
+T("ImbueFromAuras", function()
+    local up, exp = L.ImbueFromAuras({ ["Arcane Intellect"] = {}, ["Rockbiter Weapon"] = { expirationTime = 500 } })
+    eq(up, true); eq(exp, 500)
+    eq(L.ImbueFromAuras({ ["Arcane Intellect"] = {} }), false)
+    eq(L.ImbueFromAuras(nil), false, "nil is safe")
+end)
+-- IM4: source order and the Forever case (API says false, tooltip shows the imbue)
+T("ResolveWeapon: source order", function()
+    local w = L.ResolveWeapon({ api = { has = true, ms = 60000 } }, 100)
+    eq(w.mainHand, true); eq(w.mainHandMs, 60000); eq(w.source, "enchant api")
+    w = L.ResolveWeapon({ api = { has = false }, aura = { up = true, exp = 160 } }, 100)
+    eq(w.source, "aura"); eq(w.mainHandMs, 60000)
+    w = L.ResolveWeapon({ api = { has = false }, aura = { up = false }, tooltip = { up = true, secs = 3540 } }, 100)
+    eq(w.mainHand, true, "Forever: API false, tooltip up"); eq(w.mainHandMs, 3540000); eq(w.source, "tooltip")
+    w = L.ResolveWeapon({ api = { has = false }, tooltip = { up = false }, cast = { at = 90, dur = 3600 } }, 100)
+    eq(w.mainHand, false, "readable tooltip beats the cast timer")
+    eq(L.ResolveWeapon({ noWeapon = true, api = { has = true } }, 100).mainHand, false, "no weapon -> missing")
+end)
+-- IM5: cast timer: running, expired, default duration, clock reset after a PC restart
+T("ResolveWeapon: cast timer fallback", function()
+    local w = L.ResolveWeapon({ api = { has = false }, cast = { at = 100, dur = 600 } }, 160)
+    eq(w.mainHand, true); eq(w.mainHandMs, 540000); eq(w.source, "cast timer")
+    eq(L.ResolveWeapon({ cast = { at = 100, dur = 600 } }, 800).mainHand, false, "timer ran out")
+    eq(L.ResolveWeapon({ cast = { at = 100 } }, 3000).mainHand, true, "default 60 min")
+    eq(L.ResolveWeapon({ cast = { at = 5000, dur = 600 } }, 100).mainHand, false, "cast time in the future -> ignored")
+    eq(L.ResolveWeapon(nil, nil).mainHand, false, "nil is safe")
+end)
 -- BW3: empty / nil inputs are safe
 T("BuffWatchState: empty inputs", function()
     eq(#L.BuffWatchState(nil, nil, nil), 0)
@@ -1556,6 +1603,44 @@ T("Buff watch: pick from dropdown, icon shows, flashes when missing", function()
     env.C_UnitAuras = nil
 end)
 
+-- IM6: the Forever case end to end: GetWeaponEnchantInfo says no, the tooltip says Rockbiter
+T("Buff watch: weapon imbue read from tooltip, then cast timer", function()
+    local BWm = sns.BuffWatch
+    local cdb = env.SanctumCharDB.buffWatch
+    local saved = cdb.list
+    cdb.list = { { key = "Weapon imbue", label = "Weapon imbue (main hand)", weapon = true } }
+    env.GetWeaponEnchantInfo = function() return false, nil end
+    local lines = { { leftText = "Worn Mace" }, { leftText = "Rockbiter 3 (59 min)" } }
+    env.C_TooltipInfo = { GetInventoryItem = function() return { lines = lines } end }
+    BWm.Update()
+    eq(BWm.icons[1].state.up, true, "tooltip line -> up")
+    eq(BWm.icons[1].state.remaining, 3540)
+    eq(BWm.weaponSources.result, "up via tooltip")
+    -- the imbue wears off: tooltip still readable, no line -> missing
+    lines = { { leftText = "Worn Mace" } }
+    BWm.Update()
+    eq(BWm.icons[1].state.up, false, "readable tooltip without imbue -> missing")
+    -- tooltip unreadable: your Rockbiter cast starts the timer
+    env.C_TooltipInfo = nil
+    env.C_Spell = env.C_Spell or {}
+    local oldName = env.C_Spell.GetSpellName
+    env.C_Spell.GetSpellName = function(id) if id == 8017 then return "Rockbiter Weapon" end return "Other" end
+    fire("UNIT_SPELLCAST_SUCCEEDED", "party1", "g", 8017)
+    BWm.Update()
+    eq(BWm.icons[1].state.up, false, "a party member's cast is ignored")
+    fire("UNIT_SPELLCAST_SUCCEEDED", "player", "g", 8017)
+    BWm.Update()
+    eq(BWm.icons[1].state.up, true, "own cast -> up via timer")
+    eq(BWm.weaponSources.result, "up via cast timer")
+    -- probe prints the weapon lines without erroring
+    env.SlashCmdList.SANCTUM("probe")
+    env.C_Spell.GetSpellName = oldName
+    env.GetWeaponEnchantInfo = nil
+    cdb.imbueCastAt, cdb.imbueItem, cdb.imbueSecs = nil, nil, nil
+    cdb.list = saved
+    BWm.Update()
+end)
+
 T("Buff watch sits above your bar, below it when you're at the bottom", function()
     local BWm, Fr = sns.BuffWatch, sns.Frames
     local where
@@ -2273,7 +2358,7 @@ T("Core: version read from mocked GetAddOnMetadata", function()
     end)
     eq(n.version, "5.5.5")
 end)
-local FALLBACK = "0.7.1"   -- single constant: must match the fallback in Core.lua
+local FALLBACK = "0.7.2"   -- single constant: must match the fallback in Core.lua
 T("Core: version falls back to " .. FALLBACK .. " (no API, error, empty, wrong type)", function()
     local _, n = freshCore()
     eq(n.version, FALLBACK, "API missing")
@@ -2702,8 +2787,8 @@ T("ZoneTooltipLines: missing attributes and bad input", function()
     eq(L.ZoneTooltipLines("low", tipGet(z.low), tipGet(z.max), tipSlots)[1], "No ranked spell set for this zone")
     eq(L.ZoneTooltipLines("low", tipGet({ spell1 = "Heal(Rank 2)" }), nil, tipSlots)[1], "Left: Heal (Rank 2)", "no getMax is fine")
 end)
--- DR20: README and CHANGELOG mention it, version untouched
-T("Docs mention downranking; version number unchanged", function()
+-- DR20: README and CHANGELOG mention it, 0.7.1 entry kept
+T("Docs mention downranking; 0.7.1 entry kept", function()
     local rd, cl = readFile("README.md"), readFile("CHANGELOG.md")
     assert(rd:lower():find("downrank"), "README"); assert(cl:lower():find("downrank"), "CHANGELOG")
     assert(cl:match("##%s*%[0%.7%.1%]"), "0.7.1 entry still present")

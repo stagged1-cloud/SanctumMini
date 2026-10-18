@@ -2,9 +2,9 @@
 -- Namespace, saved variables, API compat shims, event bus, combat queue, slash commands.
 
 local ADDON, ns = ...
--- Read from the TOC so the login message can't drift; "0.7.1" if the API is missing.
+-- Read from the TOC so the login message can't drift; "0.7.2" if the API is missing.
 local getMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
-ns.version = "0.7.1"
+ns.version = "0.7.2"
 if getMeta then
     local ok, v = pcall(getMeta, ADDON, "Version")
     if ok and type(v) == "string" and v ~= "" then ns.version = v end
@@ -447,6 +447,17 @@ local function probe()
     ns.Print("  known spells: %d, click edge: %s", n, ns.ClickEdge())
     ns.Print("  sequence steps built: %s", tostring(ns.Sequence and ns.Sequence.count))
     ns.Print("  auras blocked (secret) this session: %d", C.auraBlocked or 0)
+    if ns.BuffWatch and ns.BuffWatch.ReadWeapon and ns.cdb and ns.cdb.buffWatch then
+        local ok = pcall(ns.BuffWatch.ReadWeapon, nil)
+        local w = ok and ns.BuffWatch.weaponSources
+        if w then
+            ns.Print("  weapon imbue: %s", w.result)
+            ns.Print("    enchant api: %s | aura: %s", tostring(w.api), w.aura)
+            ns.Print("    tooltip: %s | %s", w.tooltip, w.cast)
+        else
+            ns.Print("  weapon imbue: read failed")
+        end
+    end
     if ns.Talents and ns.Talents.ReadActual then
         local a = ns.Talents.ReadActual()
         local n = 0; for _ in pairs(a or {}) do n = n + 1 end

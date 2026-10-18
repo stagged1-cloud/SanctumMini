@@ -563,6 +563,90 @@ function L.BuffWatchState(tracked, auras, now, weapon, harmful, blocked)
     return out
 end
 
+---------------------------------------------------------------------------
+-- Weapon imbue detection. Forever returns nothing from GetWeaponEnchantInfo
+-- for Shaman imbues, so the main-hand state is worked out from several sources.
+---------------------------------------------------------------------------
+L.IMBUE_WORDS = { "Rockbiter", "Flametongue", "Frostbrand", "Windfury" }
+L.IMBUE_SPELLS = { ["Rockbiter Weapon"] = true, ["Flametongue Weapon"] = true,
+                   ["Frostbrand Weapon"] = true, ["Windfury Weapon"] = true }
+L.IMBUE_DEFAULT_SECS = 3600   -- Forever imbues last 60 min (vanilla was 5)
+
+local function imbueWord(text)
+    if type(text) ~= "string" then return nil end
+    for _, w in ipairs(L.IMBUE_WORDS) do
+        if text:sub(1, #w) == w and not text:find("Totem") then return w end
+    end
+    return nil
+end
+
+-- "(59 min)" / "(30 sec)" / "(1 hour)" -> seconds, or nil.
+function L.ParseDurationText(text)
+    if type(text) ~= "string" then return nil end
+    local n, unit = text:match("%((%d+)%s*(%a+)%)")
+    n = tonumber(n)
+    if not n then return nil end
+    unit = unit:lower()
+    if unit:find("^s") then return n end
+    if unit:find("^m") then return n * 60 end
+    if unit:find("^h") then return n * 3600 end
+    return nil
+end
+
+-- Tooltip lines of the main-hand item (strings). nil = tooltip not readable (unknown).
+-- Returns false when readable and no imbue line, else true, secondsLeft (may be nil).
+function L.ImbueFromTooltip(lines)
+    if type(lines) ~= "table" then return nil end
+    for _, text in ipairs(lines) do
+        -- "Rockbiter 3 (59 min)", or "Rockbiter 3" with no time. An item called "Windfury Blade" does not match.
+        if imbueWord(text) then
+            local secs = L.ParseDurationText(text)
+            if secs or text:match("^%a+ %d+%s*$") then return true, secs end
+        end
+    end
+    return false
+end
+
+-- Helpful auras { [name] = { expirationTime } }: an imbue aura, if Forever shows one.
+-- Returns true, expirationTime (may be nil) or false.
+function L.ImbueFromAuras(auras)
+    for name, a in pairs(auras or {}) do
+        if imbueWord(name) then return true, a and tonumber(a.expirationTime) end
+    end
+    return false
+end
+
+-- src = { api = { has, ms }, aura = { up, exp }, tooltip = { up, secs } or nil (unreadable),
+--         noWeapon = bool, cast = { at, dur } }
+-- Order: enchant API, imbue aura, tooltip (authoritative when readable), cast timer.
+-- Returns { mainHand = bool, mainHandMs = number|nil, source = string }.
+function L.ResolveWeapon(src, now)
+    src = src or {}
+    now = now or 0
+    if src.noWeapon then return { mainHand = false, source = "no weapon" } end
+    local api = src.api
+    if api and api.has then return { mainHand = true, mainHandMs = tonumber(api.ms), source = "enchant api" } end
+    local aura = src.aura
+    if aura and aura.up then
+        local exp = tonumber(aura.exp)
+        local ms = (exp and exp > now) and (exp - now) * 1000 or nil
+        return { mainHand = true, mainHandMs = ms, source = "aura" }
+    end
+    local tip = src.tooltip
+    if tip then
+        if tip.up then
+            return { mainHand = true, mainHandMs = tip.secs and tip.secs * 1000 or nil, source = "tooltip" }
+        end
+        return { mainHand = false, source = "tooltip" }
+    end
+    local cast = src.cast
+    if cast and tonumber(cast.at) then
+        local left = cast.at + (tonumber(cast.dur) or L.IMBUE_DEFAULT_SECS) - now
+        if cast.at <= now and left > 0 then return { mainHand = true, mainHandMs = left * 1000, source = "cast timer" } end
+    end
+    return { mainHand = false, source = "none" }
+end
+
 -- Rows for the Buff watch dropdown.
 -- classList = D.buffWatch[class]; known = set of spell names; current = { [name] = icon }
 -- tracked = saved list. Class buffs show once you know any spell that casts them

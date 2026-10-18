@@ -58,11 +58,105 @@ function BW.ReadAuras(filter)
     return auras
 end
 
-function BW.ReadWeapon()
-    if not GetWeaponEnchantInfo then return nil end
+-- Forever's GetWeaponEnchantInfo returns nothing for Shaman imbues, so the
+-- main hand is also checked for an imbue aura, then its tooltip, then a timer from
+-- your last imbue cast. BW.weaponSources keeps the raw readings for /sanc probe.
+local MAIN_HAND = 16
+
+local function readEnchantApi()
+    if not GetWeaponEnchantInfo then return nil, "missing" end
     local ok, has, ms = pcall(GetWeaponEnchantInfo)
-    if not ok then return nil end
-    return { mainHand = has and true or false, mainHandMs = ms }
+    if not ok then return nil, "error" end
+    if issecret(has) or issecret(ms) then return nil, "secret" end
+    return { has = has and true or false, ms = ms }, tostring(has) .. " " .. tostring(ms)
+end
+
+-- Main-hand tooltip text lines, or nil when it cannot be read.
+local function tooltipLines()
+    if C_TooltipInfo and C_TooltipInfo.GetInventoryItem then
+        local ok, data = pcall(C_TooltipInfo.GetInventoryItem, "player", MAIN_HAND)
+        if ok and type(data) == "table" and type(data.lines) == "table" then
+            local out = {}
+            for _, l in ipairs(data.lines) do
+                local t = l.leftText
+                if issecret(t) then return nil end
+                if type(t) == "string" then out[#out + 1] = t end
+            end
+            if #out > 0 then return out end
+        end
+    end
+    -- Older clients: a hidden scanning tooltip.
+    if not BW.scanTip then
+        local ok, tip = pcall(CreateFrame, "GameTooltip", "SanctumScanTip", nil, "GameTooltipTemplate")
+        if not ok or not tip then return nil end
+        BW.scanTip = tip
+    end
+    local tip = BW.scanTip
+    if not tip.SetInventoryItem or not tip.NumLines then return nil end
+    tip:SetOwner(WorldFrame or UIParent, "ANCHOR_NONE")
+    tip:ClearLines()
+    if not pcall(tip.SetInventoryItem, tip, "player", MAIN_HAND) then return nil end
+    local out = {}
+    for i = 1, tip:NumLines() or 0 do
+        local fs = _G["SanctumScanTipTextLeft" .. i]
+        local t = fs and fs:GetText()
+        if issecret(t) then tip:Hide(); return nil end
+        if type(t) == "string" then out[#out + 1] = t end
+    end
+    tip:Hide()
+    return #out > 0 and out or nil
+end
+
+-- Main-hand item ID, plus true when the read worked (so nil really means no weapon).
+local function mainHandID()
+    if GetInventoryItemID then
+        local ok, id = pcall(GetInventoryItemID, "player", MAIN_HAND)
+        if ok and not issecret(id) then return id, true end
+    end
+    return nil, false
+end
+
+-- auras = the helpful aura list from this update (nil when that read was blocked).
+function BW.ReadWeapon(auras)
+    local src, raw = {}, {}
+    local api, apiRaw = readEnchantApi()
+    src.api, raw.api = api, apiRaw
+    local auraUp, auraExp = L.ImbueFromAuras(auras or BW.lastAuras)
+    src.aura = { up = auraUp, exp = auraExp }
+    raw.aura = auraUp and ("up, expires " .. tostring(auraExp)) or "none"
+    local lines = tooltipLines()
+    if lines then
+        local up, secs = L.ImbueFromTooltip(lines)
+        src.tooltip = { up = up, secs = secs }
+        raw.tooltip = up and ("imbue line, " .. tostring(secs) .. " s left") or "readable, no imbue line"
+    else
+        raw.tooltip = "not readable"
+    end
+    local id, idOk = mainHandID()
+    if idOk and id == nil then src.noWeapon = true end
+    -- A different main-hand weapon drops the cast timer (the imbue stayed on the old one).
+    local cdb = db()
+    if id and cdb.imbueItem and cdb.imbueItem ~= id then cdb.imbueCastAt = nil end
+    if cdb.imbueCastAt then src.cast = { at = cdb.imbueCastAt, dur = cdb.imbueSecs } end
+    raw.cast = cdb.imbueCastAt and ("cast at " .. tostring(cdb.imbueCastAt)) or "no cast seen"
+    local now = GetTime()
+    local w = L.ResolveWeapon(src, now)
+    -- Learn the real duration when a live source reports one just after a cast.
+    if w.mainHandMs and w.source ~= "cast timer" and cdb.imbueCastAt and now - cdb.imbueCastAt < 10 then
+        cdb.imbueSecs = math.floor(w.mainHandMs / 1000 + (now - cdb.imbueCastAt) + 0.5)
+    end
+    raw.result = (w.mainHand and "up" or "missing") .. " via " .. w.source
+    BW.weaponSources = raw
+    return w
+end
+
+-- Your own imbue casts start the fallback timer.
+function BW.OnImbueCast(spellName)
+    if not L.IMBUE_SPELLS[spellName] then return end
+    local cdb = db()
+    cdb.imbueCastAt = GetTime()
+    cdb.imbueItem = mainHandID()
+    BW.dirty = true
 end
 
 ---------------------------------------------------------------------------
@@ -131,7 +225,7 @@ function BW.Update()
     end
     local now = GetTime()
     -- A blocked read leaves the last known lists in use: hold their state (no expiry-based "missing").
-    local states = L.BuffWatchState(tracked, BW.lastAuras or {}, now, BW.ReadWeapon(), BW.lastHarmful or {},
+    local states = L.BuffWatchState(tracked, BW.lastAuras or {}, now, BW.ReadWeapon(auras), BW.lastHarmful or {},
                                     { helpful = auras == nil, harmful = harmBlocked })
     local anyMissing = false
     local n = 0
@@ -812,6 +906,16 @@ function BW.Init()
     end
     BW.Place()
     ns.On("UNIT_AURA", function(_, unit) if unit == "player" then BW.dirty = true end end)
+    -- Your imbue casts start the fallback timer (see BW.ReadWeapon).
+    ns.On("UNIT_SPELLCAST_SUCCEEDED", function(_, unit, _, spellID)
+        if unit ~= "player" or issecret(spellID) or not spellID then return end
+        local name
+        if C_Spell and C_Spell.GetSpellName then
+            local ok, n = pcall(C_Spell.GetSpellName, spellID); if ok then name = n end
+        end
+        if not name and GetSpellInfo then local ok, n = pcall(GetSpellInfo, spellID); if ok then name = n end end
+        if name and not issecret(name) then BW.OnImbueCast(name) end
+    end)
     for _, e in ipairs({ "PLAYER_ENTERING_WORLD", "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
                          "UNIT_INVENTORY_CHANGED", "PLAYER_REGEN_ENABLED" }) do
         ns.On(e, function() BW.Update() end)

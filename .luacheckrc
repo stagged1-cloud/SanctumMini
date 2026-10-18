@@ -54,7 +54,7 @@ read_globals = {
     -- Items / inventory / bags
     "GetContainerNumFreeSlots", "GetInventoryItemDurability",
     "GetInventoryItemLink", "GetItemCount", "GetItemInfo", "GetItemInfoInstant",
-    "GetWeaponEnchantInfo",
+    "GetWeaponEnchantInfo", "GetInventoryItemID", "C_TooltipInfo", "WorldFrame",
 
     -- Spells / spellbook / talents / trainer
     "GetNumSpellTabs", "GetSpellTabInfo", "GetSpellBookItemInfo",

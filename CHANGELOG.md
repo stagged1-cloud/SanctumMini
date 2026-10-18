@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.2] - 2026-10-18 (Beta, WoW: Forever 1.60.1)
+
+- Fixed: buff watch always showed the Shaman weapon imbue as missing, so the alert panel stayed up with Rockbiter (or any imbue) active. Forever returns nothing from the weapon enchant API for imbues, so Sanctum now reads the imbue from your main-hand tooltip, with an imbue aura and a timer from your own imbue cast as fallbacks
+- Swapping to a different main-hand weapon resets the imbue timer
+- `/sanc probe` now shows the weapon imbue reading and which source it came from
+
 ## [0.7.1] - 2026-10-09 (Beta, WoW: Forever 1.60.1)
 
 - New optional "Downranking zones" tick box (Options, off by default). When on, each unit bar is split into three zones: left third casts the lowest rank of the bound heal, middle third a middle rank, right third the highest. Ranks are picked automatically from the spells you know (re-checked on level-up, respec and new spells, out of combat only). Spells with no ranks, and non-heals, cast as normal in every zone. With the option off nothing changes. Hovering a zone shows the spell and rank it will cast. Untested on Forever
