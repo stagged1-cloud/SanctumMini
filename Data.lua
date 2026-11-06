@@ -79,6 +79,7 @@ D.classKits = {
 D.downrankable = {
     ["Lesser Heal"] = true, ["Heal"] = true, ["Greater Heal"] = true, ["Flash Heal"] = true, ["Renew"] = true,
     ["Healing Touch"] = true, ["Regrowth"] = true, ["Rejuvenation"] = true,
+    ["Power Word: Shield"] = true,
     ["Holy Light"] = true, ["Flash of Light"] = true,
     ["Healing Wave"] = true, ["Lesser Healing Wave"] = true, ["Chain Heal"] = true,
 }

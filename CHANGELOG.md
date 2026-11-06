@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Changed: Power Word: Shield is now on the downrank list (Data.lua), so with Downranking zones ticked a bar bound to it casts the lowest known rank in the left third and higher ranks in the middle and right. Untested on Forever
+
 ## [0.7.2] - 2026-10-18 (Beta, WoW: Forever 1.60.1)
 
 - Fixed: buff watch always showed the Shaman weapon imbue as missing, so the alert panel stayed up with Rockbiter (or any imbue) active. Forever returns nothing from the weapon enchant API for imbues, so Sanctum now reads the imbue from your main-hand tooltip, with an imbue aura and a timer from your own imbue cast as fallbacks
