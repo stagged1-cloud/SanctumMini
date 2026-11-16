@@ -2,9 +2,9 @@
 -- Namespace, saved variables, API compat shims, event bus, combat queue, slash commands.
 
 local ADDON, ns = ...
--- Read from the TOC so the login message can't drift; "0.7.2" if the API is missing.
+-- Read from the TOC so the login message can't drift; "0.7.3" if the API is missing.
 local getMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
-ns.version = "0.7.2"
+ns.version = "0.7.3"
 if getMeta then
     local ok, v = pcall(getMeta, ADDON, "Version")
     if ok and type(v) == "string" and v ~= "" then ns.version = v end
@@ -61,13 +61,18 @@ end
 function C.ForEachAura(unit, filter, fn)
     if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
         -- Forever blocks reading some auras in combat ("Auras cannot be accessed
-        -- when secret"). That raises an error, so each read is protected and the
-        -- loop just stops; C.auraBlocked records it for /sanc probe.
+        -- when secret"). That raises an error, so each read is protected; a blocked
+        -- slot is skipped (0.7.3: it used to stop the loop, losing every readable
+        -- aura after it) and C.auraBlocked records it for /sanc probe.
         for i = 1, 40 do
             local ok, a = pcall(C_UnitAuras.GetAuraDataByIndex, unit, i, filter)
-            if not ok then C.auraBlocked = (C.auraBlocked or 0) + 1; return end
-            if not a then return end
-            if fn(a) then return end
+            if not ok then
+                C.auraBlocked = (C.auraBlocked or 0) + 1
+            elseif not a then
+                return
+            elseif fn(a) then
+                return
+            end
         end
     elseif UnitAura then
         for i = 1, 40 do
@@ -275,6 +280,7 @@ local function initDB()
     if type(SanctumCharDB.sequence) ~= "table" then
         SanctumCharDB.sequence = copy(ns.Data.defaultSequences[class] or ns.Data.defaultSequences.DEFAULT)
     end
+    SanctumCharDB.auraLog = nil   -- debug log saved by a 0.7.3 test build
     if type(SanctumCharDB.buffWatch) ~= "table" then SanctumCharDB.buffWatch = {} end
     if type(SanctumCharDB.buffWatch.list) ~= "table" then SanctumCharDB.buffWatch.list = {} end
     -- 0.7.0 alert panel. Locked by default so nothing appears until an entry is set to the panel.

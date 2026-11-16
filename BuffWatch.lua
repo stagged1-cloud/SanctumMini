@@ -19,6 +19,8 @@ local MENU_ROWS = 12
 local PSIZE_MIN, PSIZE_MAX, PGAP, PPAD, PMAX = 24, 96, 4, 6, 12
 local QMARK = "Interface\\Icons\\INV_Misc_QuestionMark"
 local issecret = issecretvalue or function() return false end
+-- Tracked buffs that bounced off a stronger buff: [entry key] = L.NewBounce(...) (0.7.3).
+BW.bounced = {}
 
 local function db() return ns.cdb.buffWatch end
 local function pdb() return ns.cdb.buffWatch.panel end
@@ -30,6 +32,8 @@ function BW.BarSize() return L.ClampBuffIconSize(ns.cdb.buffWatch.barSize) end
 ---------------------------------------------------------------------------
 -- Returns auras { [name] = { icon, expirationTime } } or nil when Forever blocked
 -- the read (secret auras in combat), so the caller keeps the last known state.
+-- 0.7.3: a blocked read also returns, second, the auras that were readable (often your
+-- own buffs), so the caller can merge them in (L.MergeAuraRead).
 -- filter: "HELPFUL" (default) or "HARMFUL".
 function BW.ReadAuras(filter)
     local before = C.auraBlocked or 0
@@ -52,10 +56,26 @@ function BW.ReadAuras(filter)
             local icon = a.icon
             if issecret(icon) then icon = nil end
             auras[a.name] = { icon = icon, expirationTime = exp, estimated = estimated or nil }
+            -- 0.7.3: remember each buff's full duration, so a recast in combat (when nothing can be
+            -- read) gets a timer. Saved per character.
+            local dur = a.duration
+            if filter ~= "HARMFUL" and not issecret(dur) and type(dur) == "number" and dur > 0 and ns.cdb then
+                local d = db()
+                d.durations = d.durations or {}
+                d.durations[a.name] = dur
+            end
         end
     end)
-    if (C.auraBlocked or 0) > before then return nil end
+    if (C.auraBlocked or 0) > before then return nil, auras end
     return auras
+end
+
+-- Set of aura names from a list, or nil.
+local function nameSet(list)
+    if not list then return nil end
+    local s = {}
+    for n in pairs(list) do s[n] = true end
+    return s
 end
 
 -- Forever's GetWeaponEnchantInfo returns nothing for Shaman imbues, so the
@@ -180,7 +200,9 @@ local function makeIcon(i)
         if not self.state then return end
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:AddLine(self.state.label)
-        if self.state.up then
+        if self.state.covered then
+            GameTooltip:AddLine("Covered by a stronger buff", 0.3, 1, 0.3)
+        elseif self.state.up then
             local r = L.FormatRemaining(self.state.remaining)
             GameTooltip:AddLine(r ~= "" and ("Up - " .. r .. " left") or "Up", 0.3, 1, 0.3)
         else
@@ -214,19 +236,43 @@ function BW.Update()
     if not BW.holder then return end
     local tracked = db().list
     if #tracked == 0 or UnitIsDeadOrGhost("player") then BW.holder:Hide(); BW.UpdatePanel(nil); return end
-    local auras = BW.ReadAuras()
-    if auras then BW.lastAuras = auras end
+    local auras, seen = BW.ReadAuras()
+    if auras then
+        BW.lastAuras = auras
+    else
+        -- Blocked: what could be read this time is trusted, the rest keeps its last known state.
+        BW.lastAuras = L.MergeAuraRead(BW.lastAuras, seen)
+    end
     local wantHarmful = false
     for _, t in ipairs(tracked) do if t.harmful then wantHarmful = true end end
     local harmBlocked = false
     if wantHarmful then
-        local harmful = BW.ReadAuras("HARMFUL")
-        if harmful then BW.lastHarmful = harmful else harmBlocked = true end
+        local harmful, harmSeen = BW.ReadAuras("HARMFUL")
+        if harmful then
+            BW.lastHarmful = harmful
+        else
+            harmBlocked = true
+            BW.lastHarmful = L.MergeAuraRead(BW.lastHarmful, harmSeen)
+        end
     end
     local now = GetTime()
+    -- Buffs that bounced off a stronger one count as up while that still holds.
+    local covered
+    for key, b in pairs(BW.bounced) do
+        if L.BounceHolds(b, auras, now) then
+            covered = covered or {}
+            covered[key] = true
+        else
+            BW.bounced[key] = nil
+        end
+    end
     -- A blocked read leaves the last known lists in use: hold their state (no expiry-based "missing").
     local states = L.BuffWatchState(tracked, BW.lastAuras or {}, now, BW.ReadWeapon(auras), BW.lastHarmful or {},
-                                    { helpful = auras == nil, harmful = harmBlocked })
+                                    { helpful = auras == nil, harmful = harmBlocked }, covered)
+    -- Seen up for real: the bounce is no longer needed.
+    for _, st in ipairs(states) do
+        if st.up and not st.covered then BW.bounced[st.key] = nil end
+    end
     local anyMissing = false
     local n = 0
     local barSize = BW.BarSize()
@@ -596,6 +642,14 @@ local function buildMenu()
     m:SetScript("OnShow", function(self) self:Fill() end)
     tinsert(UISpecialFrames, "SanctumBuffWatchMenu")
     m:Hide()
+    -- 0.7.3: closing the window (button, Escape, /sanc buffs) locks an unlocked alert panel,
+    -- so its preview does not stay on screen. Set after the Hide above so building it does not fire.
+    m:SetScript("OnHide", function()
+        if not pdb().locked then
+            BW.SetPanelLocked(true)
+            ns.Print("alert panel locked (/sanc alert unlock to move it again)")
+        end
+    end)
     return m
 end
 
@@ -883,6 +937,89 @@ function BW.WarnOverflow()
 end
 
 ---------------------------------------------------------------------------
+-- Bounced casts (0.7.3): "A more powerful spell is already active" on a tracked
+-- buff you cast on yourself means a stronger buff covers it (another priest's
+-- higher rank, a scroll...). That entry shows as up until the stronger buff goes.
+---------------------------------------------------------------------------
+local BOUNCE_WINDOW = 1   -- seconds between the error and the failed cast
+
+-- Spell name from an id, or nil (secret, unknown).
+function BW.SpellName(spellID)
+    if not spellID or issecret(spellID) then return nil end
+    local name
+    if C_Spell and C_Spell.GetSpellName then
+        local ok, n = pcall(C_Spell.GetSpellName, spellID); if ok then name = n end
+    end
+    if not name and GetSpellInfo then local ok, n = pcall(GetSpellInfo, spellID); if ok then name = n end end
+    if issecret(name) then return nil end
+    return name
+end
+
+-- The client's text for the error (English fallback when the global is missing).
+function BW.BOUNCE_TEXT()
+    return SPELL_FAILED_AURA_BOUNCED or "A more powerful spell is already active"
+end
+
+-- The tracked buff entry a spell casts, or nil.
+local function entryForSpell(name)
+    for _, t in ipairs(db().list) do
+        if not t.harmful and not t.weapon then
+            for _, n in ipairs(t.accept or { t.key }) do
+                if n == name then return t end
+            end
+        end
+    end
+end
+
+-- Your current target is someone else you could buff (so an untargeted cast went to them).
+local function targetIsOther()
+    if not UnitExists or not UnitExists("target") then return false end
+    if UnitIsUnit and UnitIsUnit("target", "player") then return false end
+    if UnitCanAssist then return UnitCanAssist("player", "target") and true or false end
+    if UnitIsFriend then return UnitIsFriend("player", "target") and true or false end
+    return true
+end
+
+-- 0.7.3: Forever blocks every aura read in combat, but your own casts are still seen. A tracked
+-- buff you cast on yourself goes into the last known list as just applied, with the duration
+-- learnt out of combat (no timer if it was never seen). The next clean read replaces it.
+-- sentTarget = target from UNIT_SPELLCAST_SENT for this cast (nil when no SENT was seen).
+function BW.OnBuffCast(name, sentTarget)
+    local t = entryForSpell(name)
+    if not t then return end
+    local me = UnitName and UnitName("player")
+    if issecret(me) then me = nil end
+    if not L.BounceIsSelf(sentTarget, me, targetIsOther()) then return end
+    local now = GetTime()
+    local dur = db().durations and db().durations[name]
+    local last = BW.lastAuras or {}
+    local old = last[name]
+    last[name] = { icon = (old and old.icon) or t.icon, expirationTime = dur and (now + dur) or nil, fresh = true }
+    BW.lastAuras = last
+    BW.bounced[t.key] = nil
+    BW.dirty = true
+end
+
+-- Called on the error and on the failed cast: once both have arrived close together, mark the entry.
+function BW.CheckBounce()
+    local now = GetTime()
+    local f, at = BW.failed, BW.bounceAt
+    if not f or not at or math.abs(f.at - at) > BOUNCE_WINDOW or now - at > BOUNCE_WINDOW then return end
+    BW.failed, BW.bounceAt = nil, nil
+    local t = entryForSpell(f.name)
+    if not t then return end
+    local s = BW.sent
+    local sentTarget
+    if s and s.name == f.name and math.abs(s.at - f.at) <= BOUNCE_WINDOW then sentTarget = s.target end
+    local me = UnitName and UnitName("player")
+    if issecret(me) then me = nil end
+    if not L.BounceIsSelf(sentTarget, me, targetIsOther()) then return end
+    local auras = BW.ReadAuras()
+    BW.bounced[t.key] = L.NewBounce(nameSet(auras), now)
+    BW.dirty = true
+end
+
+---------------------------------------------------------------------------
 -- Init
 ---------------------------------------------------------------------------
 function BW.Init()
@@ -907,15 +1044,47 @@ function BW.Init()
     BW.Place()
     ns.On("UNIT_AURA", function(_, unit) if unit == "player" then BW.dirty = true end end)
     -- Your imbue casts start the fallback timer (see BW.ReadWeapon).
-    ns.On("UNIT_SPELLCAST_SUCCEEDED", function(_, unit, _, spellID)
-        if unit ~= "player" or issecret(spellID) or not spellID then return end
-        local name
-        if C_Spell and C_Spell.GetSpellName then
-            local ok, n = pcall(C_Spell.GetSpellName, spellID); if ok then name = n end
+    ns.On("UNIT_SPELLCAST_SUCCEEDED", function(_, unit, castGUID, spellID)
+        if unit ~= "player" then return end
+        local name = BW.SpellName(spellID)
+        if not name then return end
+        BW.OnImbueCast(name)
+        -- The target comes from the SENT event of the same cast (matched by cast id, else by name).
+        local s, target = BW.sent, nil
+        if s and s.name == name then
+            if s.guid and not issecret(castGUID) and castGUID then
+                if s.guid == castGUID then target = s.target end
+            elseif GetTime() - s.at <= 10 then
+                target = s.target
+            end
         end
-        if not name and GetSpellInfo then local ok, n = pcall(GetSpellInfo, spellID); if ok then name = n end end
-        if name and not issecret(name) then BW.OnImbueCast(name) end
+        BW.OnBuffCast(name, target)
     end)
+    -- "A more powerful spell is already active" (0.7.3): see BW.CheckBounce.
+    ns.On("UNIT_SPELLCAST_SENT", function(_, unit, target, castGUID, spellID)
+        if unit ~= "player" then return end
+        local name = BW.SpellName(spellID)
+        if not name then return end
+        -- A secret target is unknown (false): never treated as you.
+        if issecret(target) then target = false else target = target or "" end
+        if issecret(castGUID) then castGUID = nil end
+        BW.sent = { name = name, target = target, at = GetTime(), guid = castGUID }
+        BW.failed, BW.bounceAt = nil, nil   -- a new attempt: older failures are not about it
+    end)
+    ns.On("UNIT_SPELLCAST_FAILED", function(_, unit, _, spellID)
+        if unit ~= "player" then return end
+        local name = BW.SpellName(spellID)
+        if not name then return end
+        BW.failed = { name = name, at = GetTime() }
+        BW.CheckBounce()
+    end)
+    ns.On("UI_ERROR_MESSAGE", function(_, _, msg)
+        if issecret(msg) then return end
+        if msg ~= BW.BOUNCE_TEXT() then BW.failed, BW.bounceAt = nil, nil; return end
+        BW.bounceAt = GetTime()
+        BW.CheckBounce()
+    end)
+    ns.On("PLAYER_DEAD", function() BW.bounced = {} end)   -- buffs drop on death
     for _, e in ipairs({ "PLAYER_ENTERING_WORLD", "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
                          "UNIT_INVENTORY_CHANGED", "PLAYER_REGEN_ENABLED" }) do
         ns.On(e, function() BW.Update() end)

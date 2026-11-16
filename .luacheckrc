@@ -70,5 +70,8 @@ read_globals = {
     "UnitGetIncomingHeals", "UnitHealth", "UnitHealthMax", "UnitInRange",
     "UnitIsConnected", "UnitIsDeadOrGhost", "UnitIsGhost", "UnitLevel",
     "UnitName", "UnitPower", "UnitPowerMax", "UnitPowerType",
-    "UnitThreatSituation",
+    "UnitThreatSituation", "UnitIsUnit", "UnitCanAssist", "UnitIsFriend",
+
+    -- Global strings
+    "SPELL_FAILED_AURA_BOUNCED",
 }

@@ -525,14 +525,19 @@ end
 -- weapon  = { mainHand = bool, mainHandMs = number } (temporary weapon enchant)
 -- Returns { { key, label, icon, up, remaining } } in tracked order.
 -- blocked = { helpful = bool, harmful = bool } (optional): that list is the last known one because
--- the latest aura read was blocked. A buff is then never moved from up to missing just because its
--- stored expiry passed (it may have been recast meanwhile), and its time left is not trusted
--- (st.stale) so the alert panel will not show an amber warning from it.
-function L.BuffWatchState(tracked, auras, now, weapon, harmful, blocked)
+-- the latest aura read was blocked. Its time left is not trusted (st.stale), so the alert panel
+-- will not show an amber warning from it. 0.7.3: a buff whose known expiry has passed is gone
+-- even when blocked (Forever blocks every aura read in combat; your own recasts are seen from
+-- the cast event and update the list, see BW.OnBuffCast). A debuff in a blocked list is still
+-- held, as before. An aura flagged fresh (read in this update, see L.MergeAuraRead) is trusted.
+-- covered = { [key] = true } (optional, 0.7.3): entries whose cast bounced off a stronger buff
+-- ("A more powerful spell is already active"). Shown as up (st.covered) while not seen up.
+function L.BuffWatchState(tracked, auras, now, weapon, harmful, blocked, covered)
     local out = {}
     auras = auras or {}
     harmful = harmful or {}
     blocked = blocked or {}
+    covered = covered or {}
     for _, t in ipairs(tracked or {}) do
         local st = { key = t.key, label = t.label or t.key, icon = t.icon, up = false, harmful = t.harmful }
         if t.weapon then
@@ -545,10 +550,11 @@ function L.BuffWatchState(tracked, auras, now, weapon, harmful, blocked)
             for _, name in ipairs(t.accept or { t.key }) do
                 local a = src[name]
                 local exp = a and tonumber(a.expirationTime)
-                local guess = a and (a.estimated or held)   -- expiry is not from this read
-                -- Past its expiry time it has fallen off, but only on a clean read: while reads are
-                -- blocked the buff may have been recast, so the last known state is held.
-                if a and exp and exp > 0 and now and exp <= now and not guess then a = nil end
+                local guess = a and (a.estimated or (held and not a.fresh))   -- expiry is not from this read
+                -- Past its expiry time it has fallen off. A buff's expiry is believed even in a blocked
+                -- read (unless it is an estimate); a debuff in a blocked read is held instead.
+                local trustExp = not guess or (not t.harmful and not a.estimated)
+                if a and exp and exp > 0 and now and exp <= now and trustExp then a = nil end
                 if a then
                     st.up = true
                     st.icon = a.icon or st.icon
@@ -557,10 +563,72 @@ function L.BuffWatchState(tracked, auras, now, weapon, harmful, blocked)
                     break
                 end
             end
+            if not st.up and not t.harmful and covered[t.key] then
+                st.up = true
+                st.covered = true
+            end
         end
         out[#out + 1] = st
     end
     return out
+end
+
+-- 0.7.3: a partly blocked aura read (some auras secret in combat). last = the last known list,
+-- seen = the auras that were readable in this read. Readable ones are flagged fresh (their state
+-- is from this read, so it is trusted); the rest keep their last known state. Fresh flags from an
+-- earlier read are dropped. Returns a new table; neither input is changed.
+function L.MergeAuraRead(last, seen)
+    local out = {}
+    for name, a in pairs(last or {}) do
+        out[name] = { icon = a.icon, expirationTime = a.expirationTime, estimated = a.estimated }
+    end
+    for name, a in pairs(seen or {}) do
+        out[name] = { icon = a.icon, expirationTime = a.expirationTime, estimated = a.estimated, fresh = true }
+    end
+    return out
+end
+
+-- 0.7.3: "A more powerful spell is already active" on a tracked buff cast on yourself.
+-- names = set of helpful aura names on you when it bounced (one of them is the stronger buff),
+-- or nil when that read was blocked; at = GetTime().
+L.BOUNCE_MAX_SECS = 3600
+function L.NewBounce(names, at)
+    local copy
+    if names then
+        copy = {}
+        for n in pairs(names) do copy[n] = true end
+    end
+    return { names = copy, at = at }
+end
+
+-- Does a bounce still cover its buff? current = helpful aura list from a clean read, or nil when
+-- the read was blocked (nothing to check against, so it holds). It ends when any aura that was on
+-- you at the bounce has gone (the stronger buff may be the one that fell off), or after
+-- L.BOUNCE_MAX_SECS. A bounce taken during a blocked read uses the first clean read as its
+-- reference (b.names is filled in).
+function L.BounceHolds(b, current, now)
+    if type(b) ~= "table" then return false end
+    if now and b.at and now - b.at > L.BOUNCE_MAX_SECS then return false end
+    if not current then return true end
+    if not b.names then
+        b.names = {}
+        for n in pairs(current) do b.names[n] = true end
+        return true
+    end
+    for n in pairs(b.names) do
+        if not current[n] then return false end
+    end
+    return true
+end
+
+-- Is a bounce error about a cast on yourself? sentTarget = target name from UNIT_SPELLCAST_SENT
+-- for that cast (nil when no SENT was seen), myName = UnitName("player");
+-- targetIsOther = true when your current target is someone else you could buff.
+function L.BounceIsSelf(sentTarget, myName, targetIsOther)
+    if sentTarget ~= nil then
+        return sentTarget == "" or sentTarget == myName
+    end
+    return not targetIsOther
 end
 
 ---------------------------------------------------------------------------

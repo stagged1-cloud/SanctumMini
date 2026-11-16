@@ -1051,7 +1051,11 @@ local function mockEnv()
                 SetAttribute = function(self, a, v) self._attrs[a] = v end,
                 IsShown = function(self) return self._shown end,
                 Show = function(self) self._shown = true; if self._scripts.OnShow then self._scripts.OnShow(self) end end,
-                Hide = function(self) self._shown = false end,
+                Hide = function(self)
+                    local was = self._shown
+                    self._shown = false
+                    if was and self._scripts.OnHide then self._scripts.OnHide(self) end   -- like the client
+                end,
                 SetShown = function(self, v) if v then self:Show() else self:Hide() end end,
                 GetWidth = function(self) return self._w or 120 end, GetHeight = function(self) return self._h or 30 end,
                 SetWidth = function(self, w) self._w = w end,
@@ -1762,11 +1766,13 @@ T("Alert panel: buff on 'Panel: gone' flashes red when it falls off, one sound",
     m:Hide()
 end)
 
--- SM3: expiry vs blocked reads. CHANGED in 0.7.1 (review fix): this test used to assert that a
+-- SM3: expiry vs blocked reads. CHANGED AGAIN in 0.7.3: Forever blocks every aura read in combat, so a
+-- buff's known expiry is now believed in a blocked read (own recasts are seen from the cast event).
+-- Previously CHANGED in 0.7.1 (review fix): this test used to assert that a
 -- BLOCKED read after the stored expiry passed shows the buff missing. That encoded the false-alert
 -- bug (the buff may have been recast mid-fight), so a blocked read now holds the last known state;
 -- the timer-ran-out rule still applies to clean reads.
-T("Expiry vs blocked reads: blocked holds last state, clean read shows it gone", function()
+T("Expiry vs blocked reads: a passed buff expiry counts even when blocked; clean read too", function()
     local BWm = sns.BuffWatch
     local list = env.SanctumCharDB.buffWatch.list
     list[1].alert = nil                       -- back to the bar
@@ -1778,9 +1784,14 @@ T("Expiry vs blocked reads: blocked holds last state, clean read shows it gone",
     local oldTime = env.GetTime
     env.GetTime = function() return 1011 end
     BWm.Update()
-    eq(BWm.icons[1].state.up, true, "blocked read: held up, not a false missing")
+    eq(BWm.icons[1].state.up, false, "blocked read: known expiry passed, gone (0.7.3)")
+    eq(BWm.flashing, true)
+    env.GetTime = function() return 1005 end
+    BWm.lastAuras = { ["Inner Fire"] = { icon = 135926, expirationTime = 1010 } }
+    BWm.Update()
+    eq(BWm.icons[1].state.up, true, "blocked read before expiry: held up")
     eq(BWm.icons[1].state.stale, true, "time left is not trusted")
-    eq(BWm.flashing, false)
+    env.GetTime = function() return 1011 end
     -- a clean read that still lists the buff with a passed expiry (the timer genuinely ran out)
     env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, filter) if filter == "HELPFUL" then return auras[i] end end }
     BWm.Update()
@@ -1790,13 +1801,14 @@ T("Expiry vs blocked reads: blocked holds last state, clean read shows it gone",
 end)
 
 -- Fix 1 (0.7.1 review): pure-logic checks for the blocked flag and the stale amber warning.
-T("BuffWatchState: blocked list holds an expired buff up; no amber warning from stale expiry", function()
+T("BuffWatchState: blocked list: passed buff expiry is gone (0.7.3); no amber warning from stale expiry", function()
     local tracked = { { key = "Inner Fire", alert = "missing" } }
     local old = { ["Inner Fire"] = { expirationTime = 1010 } }
-    -- expiry passed: clean read -> gone; blocked (helpful) -> held up with no trusted time left
+    -- expiry passed: clean read -> gone; blocked (helpful) -> also gone since 0.7.3
     eq(L.BuffWatchState(tracked, old, 1011)[1].up, false, "clean: gone")
-    local st = L.BuffWatchState(tracked, old, 1011, nil, nil, { helpful = true })[1]
-    eq(st.up, true, "blocked: held"); eq(st.remaining, nil); eq(st.stale, true)
+    eq(L.BuffWatchState(tracked, old, 1011, nil, nil, { helpful = true })[1].up, false, "blocked: gone too")
+    local st = L.BuffWatchState(tracked, old, 1005, nil, nil, { helpful = true })[1]
+    eq(st.up, true, "blocked, before expiry: held"); eq(st.remaining, 5); eq(st.stale, true)
     eq(L.BuffWatchState(tracked, old, 1011, nil, nil, { harmful = true })[1].up, false, "other list blocked: no effect")
     -- still ahead of expiry but inside the warning window: a blocked/estimated expiry must not warn
     local near = { ["Inner Fire"] = { expirationTime = 1020 } }
@@ -1813,7 +1825,7 @@ T("BuffWatchState: blocked list holds an expired buff up; no amber warning from 
     eq(L.BuffWatchState(dt, {}, 1011, nil, { ["Weakened Soul"] = { expirationTime = 1010 } }, { harmful = true })[1].up, true)
 end)
 
-T("BuffWatch: recast mid-fight during blocked reads does not flash missing", function()
+T("BuffWatch: recast mid-fight during blocked reads does not flash missing (0.7.3: seen from the cast)", function()
     local BWm = sns.BuffWatch
     env.SanctumCharDB.buffWatch.list = { { key = "Inner Fire", label = "Inner Fire", alert = "missing" } }
     env.SanctumCharDB.buffWatch.panel.locked = true           -- hidden unless there is a live alert
@@ -1823,6 +1835,11 @@ T("BuffWatch: recast mid-fight during blocked reads does not flash missing", fun
     BWm.Update()
     env.C_UnitAuras = { GetAuraDataByIndex = function() error("Auras cannot be accessed when secret") end }
     env.GetTime = function() return 1015 end                -- old expiry has passed, reads blocked
+    local oldSpell = env.C_Spell
+    env.C_Spell = { GetSpellName = function(id) return ({ [588] = "Inner Fire" })[id] end }
+    fire("UNIT_SPELLCAST_SENT", "player", nil, "cast-if", 588)
+    fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast-if", 588)   -- you recast it (seen from the cast event)
+    env.C_Spell = oldSpell
     BWm.Update()
     eq(BWm.panel:IsShown(), false, "no false missing alert")
     -- a secret expiry on a clean read: estimate flagged, never compared
@@ -2008,7 +2025,9 @@ T("BuffWatch: secret aura name -> ReadAuras nil, auraBlocked +1, lastAuras kept"
     eq(BWm.ReadAuras(), nil, "incomplete read returns nil")
     eq(C.auraBlocked, before + 1, "counted as blocked")
     BWm.Update()
-    assert(BWm.lastAuras == good, "lastAuras untouched by a blocked read")
+    -- 0.7.3: a blocked read keeps the last known state (merged copy, nothing readable to add)
+    eq(BWm.lastAuras["Inner Fire"].expirationTime, good["Inner Fire"].expirationTime, "last known state kept")
+    eq(BWm.lastAuras["Inner Fire"].fresh, nil, "not flagged fresh")
     eq(BWm.icons[1].state.up, true, "buff still shown as up, not flashing missing")
     env.C_UnitAuras = nil
 end)
@@ -2358,7 +2377,7 @@ T("Core: version read from mocked GetAddOnMetadata", function()
     end)
     eq(n.version, "5.5.5")
 end)
-local FALLBACK = "0.7.2"   -- single constant: must match the fallback in Core.lua
+local FALLBACK = "0.7.3"   -- single constant: must match the fallback in Core.lua
 T("Core: version falls back to " .. FALLBACK .. " (no API, error, empty, wrong type)", function()
     local _, n = freshCore()
     eq(n.version, FALLBACK, "API missing")
@@ -2792,6 +2811,244 @@ T("Docs mention downranking; 0.7.1 entry kept", function()
     local rd, cl = readFile("README.md"), readFile("CHANGELOG.md")
     assert(rd:lower():find("downrank"), "README"); assert(cl:lower():find("downrank"), "CHANGELOG")
     assert(cl:match("##%s*%[0%.7%.1%]"), "0.7.1 entry still present")
+end)
+
+
+print("== 0.7.3: buff watch in combat and bounced casts")
+-- CB1: partial read merge: readable auras are fresh, the rest keep their last state, inputs untouched
+T("MergeAuraRead: fresh flags, last kept, old fresh dropped, inputs unchanged", function()
+    local last = { ["Inner Fire"] = { icon = 1, expirationTime = 900, fresh = true }, ["Stamina"] = { expirationTime = 2000 } }
+    local seen = { ["Inner Fire"] = { icon = 2, expirationTime = 1500 } }
+    local m = L.MergeAuraRead(last, seen)
+    eq(m["Inner Fire"].expirationTime, 1500, "seen wins"); eq(m["Inner Fire"].fresh, true)
+    eq(m["Stamina"].expirationTime, 2000, "unseen kept"); eq(m["Stamina"].fresh, nil, "unseen not fresh")
+    eq(last["Inner Fire"].expirationTime, 900, "last untouched"); assert(m ~= last)
+    local m2 = L.MergeAuraRead(m, nil)
+    eq(m2["Inner Fire"].fresh, nil, "fresh dropped on the next merge")
+    eq(next(L.MergeAuraRead(nil, nil)), nil, "nil inputs -> empty")
+end)
+-- CB2: in a blocked list a fresh aura is trusted (expired -> gone, time shown), a held one is not
+T("BuffWatchState: fresh aura in a blocked list is trusted", function()
+    local tracked = { { key = "Inner Fire" } }
+    local blocked = { helpful = true }
+    eq(L.BuffWatchState(tracked, { ["Inner Fire"] = { expirationTime = 1020 } }, 1011, nil, nil, blocked)[1].stale, true, "held, stale")
+    eq(L.BuffWatchState(tracked, { ["Inner Fire"] = { expirationTime = 1010, fresh = true } }, 1011, nil, nil, blocked)[1].up,
+       false, "fresh and expired: gone")
+    local st = L.BuffWatchState(tracked, { ["Inner Fire"] = { expirationTime = 1100, fresh = true } }, 1000, nil, nil, blocked)[1]
+    eq(st.up, true); eq(st.remaining, 100); eq(st.stale, nil, "fresh: time left trusted")
+end)
+-- CB3: covered entries show as up (no alert), real ups and debuffs are not covered
+T("BuffWatchState: covered entries", function()
+    local tracked = { { key = "Power Word: Fortitude", accept = { "Power Word: Fortitude" }, alert = "missing" },
+                      { key = "Inner Fire", alert = "missing" }, { key = "Weakened Soul", harmful = true } }
+    local cov = { ["Power Word: Fortitude"] = true, ["Inner Fire"] = true, ["Weakened Soul"] = true }
+    local st = L.BuffWatchState(tracked, { ["Inner Fire"] = { expirationTime = 0 } }, 1000, nil, {}, nil, cov)
+    eq(st[1].up, true); eq(st[1].covered, true, "missing but covered")
+    eq(st[2].up, true); eq(st[2].covered, nil, "really up: not marked covered")
+    eq(st[3].up, false, "debuffs are never covered")
+    eq(#L.AlertState(tracked, st, 30), 0, "no alert for a covered buff")
+    eq(L.BuffWatchState(tracked, {}, 1000)[1].up, false, "no covered set: missing as before")
+end)
+-- CB4: when a bounce stops covering its buff
+T("BounceHolds: blocked holds, any reference aura gone ends it, timeout, blocked bounce learns names", function()
+    eq(L.BounceHolds(nil, {}, 0), false)
+    local b = L.NewBounce({ Stamina = true, ["Well Fed"] = true }, 1000)
+    eq(L.BounceHolds(b, nil, 1100), true, "blocked read: holds")
+    eq(L.BounceHolds(b, { Stamina = {}, ["Well Fed"] = {}, Other = {} }, 1100), true, "all still there")
+    eq(L.BounceHolds(b, { ["Well Fed"] = {} }, 1100), false, "stronger buff may have gone")
+    eq(L.BounceHolds(b, { Stamina = {}, ["Well Fed"] = {} }, 1000 + L.BOUNCE_MAX_SECS + 1), false, "timed out")
+    local src = { Stamina = true }
+    local c = L.NewBounce(src, 1); src.Other = true
+    eq(c.names.Other, nil, "names copied")
+    local blind = L.NewBounce(nil, 1000)
+    eq(L.BounceHolds(blind, nil, 1001), true)
+    eq(L.BounceHolds(blind, { Stamina = {} }, 1002), true, "first clean read becomes the reference")
+    eq(blind.names.Stamina, true)
+    eq(L.BounceHolds(blind, {}, 1003), false, "then ends when it goes")
+end)
+-- CB5: only bounces on yourself count
+T("BounceIsSelf: SENT target, no SENT with/without a friendly target", function()
+    eq(L.BounceIsSelf("", "Mrs", true), true, "self-only spell (empty target)")
+    eq(L.BounceIsSelf("Mrs", "Mrs", true), true, "cast on you")
+    eq(L.BounceIsSelf("Bob", "Mrs", false), false, "cast on someone else")
+    eq(L.BounceIsSelf(false, "Mrs", false), false, "secret target: unknown")
+    eq(L.BounceIsSelf(nil, "Mrs", false), true, "no SENT, no friendly target")
+    eq(L.BounceIsSelf(nil, "Mrs", true), false, "no SENT, friendly target")
+end)
+-- CB6: smoke: a blocked slot no longer hides the readable auras after it; a mid-fight recast shows
+T("BuffWatch: readable aura after a blocked slot is seen (recast in combat shows up)", function()
+    local BWm, C = sns.BuffWatch, sns.C
+    BWm.bounced = {}
+    env.SanctumCharDB.buffWatch.list = { { key = "Inner Fire", label = "Inner Fire", alert = "missing" } }
+    env.C_UnitAuras = { GetAuraDataByIndex = function() end }
+    BWm.Update()
+    eq(BWm.icons[1].state.up, false, "starts missing")
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, f)
+        if f ~= "HELPFUL" then return end
+        if i == 1 then error("Auras cannot be accessed when secret") end
+        if i == 2 then return { name = "Inner Fire", icon = 1, expirationTime = 1600.25 } end
+    end }
+    local before = C.auraBlocked or 0
+    local r, seen = BWm.ReadAuras()
+    eq(r, nil, "blocked read still returns nil"); assert(seen and seen["Inner Fire"], "readable aura returned")
+    eq(C.auraBlocked, before + 1, "one blocked slot counted")
+    BWm.Update()
+    eq(BWm.icons[1].state.up, true, "recast picked up mid-fight")
+    eq(BWm.icons[1].state.remaining, 600, "time left from this read")
+    env.C_UnitAuras = nil
+end)
+-- CB7: smoke: bounce on yourself covers the entry until the stronger buff goes
+local function bounceSetup(auraList)
+    local BWm = sns.BuffWatch
+    BWm.bounced, BWm.sent, BWm.failed, BWm.bounceAt = {}, nil, nil, nil
+    env.SanctumCharDB.buffWatch.list = { { key = "Power Word: Fortitude", label = "Power Word: Fortitude",
+        accept = { "Power Word: Fortitude", "Prayer of Fortitude" }, alert = "missing" } }
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, f) if f == "HELPFUL" then return auraList[i] end end }
+    local oldName = env.C_Spell and env.C_Spell.GetSpellName
+    env.C_Spell = env.C_Spell or {}
+    env.C_Spell.GetSpellName = function(id) return ({ [1243] = "Power Word: Fortitude", [588] = "Inner Fire" })[id] end
+    return BWm, function() env.C_Spell.GetSpellName = oldName; env.C_UnitAuras = nil end
+end
+T("BuffWatch: bounced cast on yourself shows covered, clears when the stronger buff goes", function()
+    local auras = { { name = "Stamina", icon = 9, expirationTime = 0 } }
+    local BWm, restore = bounceSetup(auras)
+    BWm.Update()
+    eq(BWm.icons[1].state.up, false, "missing before")
+    fire("UNIT_SPELLCAST_SENT", "player", "", "g", 1243)
+    fire("UI_ERROR_MESSAGE", 0, "A more powerful spell is already active")
+    fire("UNIT_SPELLCAST_FAILED", "player", "g", 1243)
+    BWm.Update()
+    eq(BWm.icons[1].state.up, true, "covered counts as up"); eq(BWm.icons[1].state.covered, true)
+    eq(BWm.panel:IsShown(), false, "no missing alert while covered")
+    table.remove(auras, 1)                                   -- the scroll wears off
+    BWm.Update()
+    eq(BWm.icons[1].state.up, false, "missing again"); eq(BWm.bounced["Power Word: Fortitude"], nil)
+    restore()
+end)
+T("BuffWatch: bounce on someone else, or another error, does not cover", function()
+    local BWm, restore = bounceSetup({ { name = "Stamina", icon = 9, expirationTime = 0 } })
+    fire("UNIT_SPELLCAST_SENT", "player", "Bob", "g", 1243)
+    fire("UI_ERROR_MESSAGE", 0, "A more powerful spell is already active")
+    fire("UNIT_SPELLCAST_FAILED", "player", "g", 1243)
+    BWm.Update()
+    eq(BWm.icons[1].state.up, false, "cast on Bob: not covered")
+    fire("UNIT_SPELLCAST_SENT", "player", "", "g", 1243)
+    fire("UI_ERROR_MESSAGE", 0, "Not enough mana")
+    fire("UNIT_SPELLCAST_FAILED", "player", "g", 1243)
+    BWm.Update()
+    eq(BWm.icons[1].state.up, false, "other error: not covered")
+    fire("UNIT_SPELLCAST_SENT", "player", "", "g", 588)
+    fire("UI_ERROR_MESSAGE", 0, "A more powerful spell is already active")
+    fire("UNIT_SPELLCAST_FAILED", "player", "g", 588)         -- untracked spell
+    BWm.Update()
+    eq(next(BWm.bounced), nil, "untracked spell: nothing marked")
+    restore()
+end)
+T("BuffWatch: real buff seen up drops the bounce; death clears bounces", function()
+    local auras = { { name = "Stamina", icon = 9, expirationTime = 0 } }
+    local BWm, restore = bounceSetup(auras)
+    fire("UNIT_SPELLCAST_SENT", "player", "", "g", 1243)
+    fire("UI_ERROR_MESSAGE", 0, "A more powerful spell is already active")
+    fire("UNIT_SPELLCAST_FAILED", "player", "g", 1243)
+    BWm.Update()
+    auras[2] = { name = "Prayer of Fortitude", icon = 3, expirationTime = 0 }
+    BWm.Update()
+    eq(BWm.icons[1].state.covered, nil); eq(BWm.bounced["Power Word: Fortitude"], nil, "dropped once really up")
+    BWm.bounced["Power Word: Fortitude"] = L.NewBounce(nil, 1000)
+    fire("PLAYER_DEAD")
+    eq(next(BWm.bounced), nil, "cleared on death")
+    restore()
+end)
+
+
+-- CB8: closing the Buff watch window locks an unlocked alert panel (and says so once)
+T("BuffWatch: closing the window locks an unlocked alert panel", function()
+    local BWm = sns.BuffWatch
+    local p = env.SanctumCharDB.buffWatch.panel
+    local oldPrint = env.print
+    env._printed = {}
+    env.print = function(x) env._printed[#env._printed + 1] = tostring(x) end
+    BWm.SetPanelLocked(true)
+    BWm.ToggleMenu(); assert(BWm.menu:IsShown(), "window open")
+    BWm.SetPanelLocked(false)
+    local n = #env._printed
+    BWm.ToggleMenu()                                         -- close (same path as the X button / Escape)
+    eq(p.locked, true, "locked on close"); eq(p.placed, true, "position kept")
+    eq(#env._printed, n + 1, "one message")
+    assert(env._printed[#env._printed]:find("alert panel locked"), "message text")
+    BWm.ToggleMenu(); n = #env._printed
+    BWm.menu:Hide()                                          -- already locked: nothing to say
+    eq(p.locked, true); eq(#env._printed, n, "no message when already locked")
+    BWm.SetPanelLocked(false)                                -- /sanc alert unlock with the window closed
+    eq(p.locked, false, "stays unlocked with no window to close")
+    BWm.SetPanelLocked(true)
+    env.print = oldPrint
+end)
+
+-- CB9: combat (all reads blocked): timers count, own recasts are seen from the cast event
+T("BuffWatchState: debuff in a blocked read is still held past expiry", function()
+    local dt = { { key = "Weakened Soul", harmful = true } }
+    eq(L.BuffWatchState(dt, {}, 1011, nil, { ["Weakened Soul"] = { expirationTime = 1010 } }, { harmful = true })[1].up, true)
+    eq(L.BuffWatchState(dt, {}, 1011, nil, { ["Weakened Soul"] = { expirationTime = 1010 } })[1].up, false, "clean: gone")
+    eq(L.BuffWatchState({ { key = "Inner Fire" } }, { ["Inner Fire"] = { expirationTime = 1010, estimated = true } },
+       1011, nil, nil, { helpful = true })[1].up, true, "estimated buff expiry is never believed")
+end)
+T("BuffWatch combat: duration learnt; expiry flashes missing; self recast shows up with a timer", function()
+    local BWm = sns.BuffWatch
+    BWm.bounced, BWm.sent = {}, nil
+    env.SanctumCharDB.buffWatch.list = { { key = "Inner Fire", label = "Inner Fire", alert = "missing", accept = { "Inner Fire" } } }
+    env.SanctumCharDB.buffWatch.durations = nil
+    local oldTime, oldSpell = env.GetTime, env.C_Spell
+    env.C_Spell = { GetSpellName = function(id) return ({ [588] = "Inner Fire", [1243] = "Power Word: Fortitude" })[id] end }
+    local now = 1000
+    env.GetTime = function() return now end
+    env.C_UnitAuras = { GetAuraDataByIndex = function(_, i, f)
+        if f == "HELPFUL" and i == 1 then return { name = "Inner Fire", icon = 7, expirationTime = 1600, duration = 600 } end
+    end }
+    BWm.Update()
+    eq(env.SanctumCharDB.buffWatch.durations["Inner Fire"], 600, "duration learnt and saved")
+    -- combat: everything blocked
+    env.C_UnitAuras = { GetAuraDataByIndex = function() error("Auras cannot be accessed when secret") end }
+    now = 1300; BWm.Update()
+    eq(BWm.icons[1].state.up, true, "before expiry: up"); eq(BWm.icons[1].state.remaining, 300)
+    now = 1601; BWm.Update()
+    eq(BWm.icons[1].state.up, false, "known expiry passed in combat: missing straight away")
+    eq(BWm.panel:IsShown(), true, "alert shows")
+    -- recast on someone else: not yours
+    fire("UNIT_SPELLCAST_SENT", "player", "Bob", "c1", 588)
+    fire("UNIT_SPELLCAST_SUCCEEDED", "player", "c1", 588)
+    BWm.Update()
+    eq(BWm.icons[1].state.up, false, "cast on Bob: still missing")
+    -- recast on yourself (self-only spells have no target)
+    fire("UNIT_SPELLCAST_SENT", "player", nil, "c2", 588)
+    fire("UNIT_SPELLCAST_SUCCEEDED", "player", "c2", 588)
+    BWm.Update()
+    eq(BWm.icons[1].state.up, true, "recast seen in combat"); eq(BWm.icons[1].state.remaining, 600, "timer from learnt duration")
+    eq(BWm.panel:IsShown(), false, "alert cleared")
+    now = 1900; BWm.Update()
+    eq(BWm.icons[1].state.up, true, "held through later blocked reads"); eq(BWm.icons[1].state.remaining, 301)
+    now = 2202; BWm.Update()
+    eq(BWm.icons[1].state.up, false, "recast timer runs out too")
+    -- SUCCEEDED whose SENT was for another cast id: falls back to your target (none: you)
+    fire("UNIT_SPELLCAST_SENT", "player", "Bob", "c3", 588)
+    fire("UNIT_SPELLCAST_SUCCEEDED", "player", "c4", 588)
+    BWm.Update()
+    eq(BWm.icons[1].state.up, true, "no matching SENT, no friendly target: yours")
+    -- an untracked spell changes nothing; no learnt duration means up with no timer
+    env.SanctumCharDB.buffWatch.durations = nil
+    BWm.lastAuras = {}
+    fire("UNIT_SPELLCAST_SENT", "player", nil, "c5", 1243)
+    fire("UNIT_SPELLCAST_SUCCEEDED", "player", "c5", 1243)
+    eq(BWm.lastAuras["Power Word: Fortitude"], nil, "untracked: ignored")
+    fire("UNIT_SPELLCAST_SENT", "player", nil, "c6", 588)
+    fire("UNIT_SPELLCAST_SUCCEEDED", "player", "c6", 588)
+    BWm.Update()
+    eq(BWm.icons[1].state.up, true); eq(BWm.icons[1].state.remaining, nil, "no duration known: no timer")
+    -- leaving combat: the clean read is the truth again
+    env.C_UnitAuras = { GetAuraDataByIndex = function() end }
+    BWm.Update()
+    eq(BWm.icons[1].state.up, false, "clean read: gone")
+    env.GetTime, env.C_Spell, env.C_UnitAuras = oldTime, oldSpell, nil
 end)
 
 print(("\n%d passed, %d failed"):format(pass, fail))
