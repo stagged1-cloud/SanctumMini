@@ -1,7 +1,8 @@
 # Changelog
 
-## [0.7.3] - 2026-11-16 (Beta, WoW: Forever 1.60.1)
+## [0.7.3] - 2026-11-16 (WoW: Forever 1.60.1)
 
+- Sanctum Mini is now a full release, as WoW: Forever is out of beta
 - Fixed: buff watch did not notice buff changes in combat. Forever blocks addons from reading any aura in combat, so Sanctum now works from what it can still see: a tracked buff you cast on yourself mid-fight shows as up straight away (with its timer, once Sanctum has seen that buff out of combat), and a buff whose known timer runs out mid-fight shows as missing straight away instead of when combat ends. A buff cancelled or dispelled in combat still shows as missing only when combat ends (the game gives addons no way to see it), and a buff someone else recasts on you mid-fight shows as missing until combat ends
 - If the game ever hides only some auras, Sanctum now still reads the rest
 - Fixed: buff watch showed a buff as missing when a stronger buff covered it and the game refused the cast with "A more powerful spell is already active" (for example a scroll, or another priest's higher rank). When you get that error casting a tracked buff on yourself, the icon now shows as up, with "Covered by a stronger buff" in its tooltip, until a buff that was on you at the time wears off (or after an hour). Casts on other players are ignored. Untested on Forever

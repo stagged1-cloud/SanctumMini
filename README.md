@@ -2,7 +2,7 @@
 
 Healer party frames with click-casting, a GSE-style sequence button, a talent planner and a per-level goals checklist. Built for **WoW: Forever** (Interface 16001, levels 5-60). Supports all four healing classes: Priest, Druid, Paladin and Shaman.
 
-> Beta. WoW: Forever is in beta and so is this. Spell, item and talent data are researched against build 1.60.1 and may shift between patches.
+> Spell, item and talent data are researched against WoW: Forever build 1.60.1 and may shift between patches.
 
 ## Features
 
@@ -39,7 +39,7 @@ Healer party frames with click-casting, a GSE-style sequence button, a talent pl
 
 ## Install
 
-CurseForge app (Forever flavour, search **Sanctum Mini**), or unzip into `World of Warcraft\_classic_beta_\Interface\AddOns\` so you end up with `AddOns\SanctumMini\SanctumMini_Camelot.toc`.
+CurseForge app (Forever flavour, search **Sanctum Mini**), or unzip into `World of Warcraft\_forever_\Interface\AddOns\` so you end up with `AddOns\SanctumMini\SanctumMini_Camelot.toc`.
 
 ## Development
 
